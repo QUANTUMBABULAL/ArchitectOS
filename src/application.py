@@ -92,6 +92,7 @@ Commands:
   /providers       Provider readiness, turns, and dispatch counters
   /conversations   Per-provider conversation state
   /reset           Clear conversation history on all providers
+  /dashboard       Provider status board (refreshes pending sign-ins)
   /auth            Show each provider's authentication state
   /login           Wait for pending manual sign-ins to complete
   /profile         Show the persistent browser profile backing sessions
@@ -752,6 +753,13 @@ class ResearchOperatorApp:
                     if recovered
                     else "All providers healthy."
                 )
+                continue
+
+            if request.lower() in {"/dashboard", "/status-board"}:
+                promoted = await self._session.poll_pending_auth()
+                if promoted:
+                    print()
+                print(self._session.dashboard())
                 continue
 
             if request.lower() in {"/auth", "/login"}:

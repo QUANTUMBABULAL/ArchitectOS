@@ -34,7 +34,11 @@ from src.exceptions import (
 from src.logger import get_logger
 
 from .browser_session import BrowserSession
-from .chrome_profile import ChromeProfile, ChromeProfileConfig
+from .chrome_profile import (
+    ARCHITECTOS_PROFILE_NAME,
+    ChromeProfile,
+    ChromeProfileConfig,
+)
 from .launch_diagnostics import LaunchFailureKind, classify_launch_failure
 
 
@@ -69,6 +73,8 @@ class BrowserLaunchConfig(BaseModel):
         operation_timeout_seconds: Default Playwright operation timeout.
         create_profile_if_missing: Whether a missing profile directory
             should be created rather than treated as an error.
+        maximized: Whether to open the window maximized with no fixed
+            viewport, matching an ordinary Chrome session.
         launch_args: Extra browser launch arguments.
         slow_mo_ms: Playwright slow-motion delay in milliseconds.
     """
@@ -80,6 +86,7 @@ class BrowserLaunchConfig(BaseModel):
     user_data_dir: Optional[Path] = Field(default=None)
     profile_directory: str = Field(default="Default", min_length=1)
     create_profile_if_missing: bool = Field(default=False)
+    maximized: bool = Field(default=True)
     viewport_width: int = Field(default=BROWSER_VIEWPORT_WIDTH, gt=0)
     viewport_height: int = Field(default=BROWSER_VIEWPORT_HEIGHT, gt=0)
     timeout_seconds: float = Field(default=BROWSER_LAUNCH_TIMEOUT, gt=0)
@@ -125,14 +132,25 @@ class BrowserLaunchConfig(BaseModel):
         if settings.chrome_path:
             values["executable_path"] = settings.chrome_path
 
-        automation_profile = (settings.automation_profile or "").strip()
-        if automation_profile and automation_profile != "Default":
-            values["user_data_dir"] = ChromeProfile.automation_user_data_dir(
-                profile_name=automation_profile,
-                base_dir=Path(settings.data_dir),
-            )
-            values["profile_directory"] = "Default"
-            values["create_profile_if_missing"] = True
+        values["maximized"] = settings.browser_maximized
+
+        automation_profile = (
+            settings.automation_profile or ARCHITECTOS_PROFILE_NAME
+        ).strip() or ARCHITECTOS_PROFILE_NAME
+
+        # Preserve any signed-in sessions from an earlier profile layout
+        # before deciding where to launch from.
+        ChromeProfile.migrate_legacy_profile(
+            base_dir=Path(settings.data_dir),
+            profile_directory=automation_profile,
+        )
+
+        values["user_data_dir"] = ChromeProfile.automation_user_data_dir(
+            profile_name=automation_profile,
+            base_dir=Path(settings.data_dir),
+        )
+        values["profile_directory"] = automation_profile
+        values["create_profile_if_missing"] = True
 
         values.update(overrides)
         return cls(**values)
@@ -307,20 +325,38 @@ class BrowserFactory:
             )
         )
 
-        args = tuple(profile.launch_args()) + launch_config.launch_args
+        args = tuple(
+            profile.launch_args(maximized=launch_config.maximized)
+        ) + launch_config.launch_args
+
+        # A maximized window must not also carry a fixed viewport:
+        # Playwright would resize the page back to that size, defeating
+        # --start-maximized. no_viewport lets the page track the real
+        # window, which is also how an ordinary Chrome session behaves.
+        viewport_kwargs: dict[str, object]
+        if launch_config.maximized and not launch_config.headless:
+            viewport_kwargs = {"no_viewport": True}
+        else:
+            viewport_kwargs = {
+                "viewport": {
+                    "width": launch_config.viewport_width,
+                    "height": launch_config.viewport_height,
+                }
+            }
 
         try:
             context = await self._playwright.chromium.launch_persistent_context(
                 user_data_dir=str(profile.user_data_dir),
                 executable_path=str(profile.executable_path),
                 headless=launch_config.headless,
-                viewport={
-                    "width": launch_config.viewport_width,
-                    "height": launch_config.viewport_height,
-                },
                 timeout=self._seconds_to_ms(launch_config.timeout_seconds),
                 slow_mo=launch_config.slow_mo_ms,
                 args=list(args),
+                # Drop Playwright's own automation switch so Chrome does
+                # not advertise itself as automated. Sign-in flows that
+                # refuse automated browsers are less likely to block.
+                ignore_default_args=["--enable-automation"],
+                **viewport_kwargs,
             )
             context.set_default_timeout(
                 self._seconds_to_ms(

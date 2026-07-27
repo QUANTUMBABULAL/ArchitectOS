@@ -1,0 +1,24 @@
+2026/07/27-23:13:32.076 6018 Reusing MANIFEST C:\Users\CHINMAI\Desktop\AI-Research-Operator\data\chrome-profile\ArchitectOS\Local Storage\leveldb/MANIFEST-000001
+2026/07/27-23:13:32.327 6018 Recovering log #77
+2026/07/27-23:13:32.346 6018 Reusing old log C:\Users\CHINMAI\Desktop\AI-Research-Operator\data\chrome-profile\ArchitectOS\Local Storage\leveldb/000077.log 
+2026/07/27-23:14:16.346 6018 Level-0 table #81: started
+2026/07/27-23:14:16.371 6018 Level-0 table #81: 85388 bytes OK
+2026/07/27-23:14:16.381 6018 Delete type=0 #77
+2026/07/27-23:15:15.671 75cc Level-0 table #83: started
+2026/07/27-23:15:15.680 75cc Level-0 table #83: 98912 bytes OK
+2026/07/27-23:15:15.682 75cc Delete type=0 #80
+2026/07/27-23:15:15.685 75cc Compacting 4@0 + 1@1 files
+2026/07/27-23:15:15.695 75cc Generated table #84@0: 407 keys, 104799 bytes
+2026/07/27-23:15:15.695 75cc Compacted 4@0 + 1@1 files => 104799 bytes
+2026/07/27-23:15:15.696 75cc compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/27-23:15:15.697 75cc Delete type=2 #74
+2026/07/27-23:15:15.697 75cc Delete type=2 #76
+2026/07/27-23:15:15.698 75cc Delete type=2 #78
+2026/07/27-23:15:15.698 75cc Delete type=2 #81
+2026/07/27-23:15:15.698 75cc Delete type=2 #83
+2026/07/27-23:15:58.138 75cc Level-0 table #86: started
+2026/07/27-23:15:58.152 75cc Level-0 table #86: 15947 bytes OK
+2026/07/27-23:15:58.155 75cc Delete type=0 #82
+2026/07/27-23:17:19.177 75cc Level-0 table #88: started
+2026/07/27-23:17:19.186 75cc Level-0 table #88: 103747 bytes OK
+2026/07/27-23:17:19.189 75cc Delete type=0 #85

@@ -18,7 +18,15 @@ from typing import Iterable, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from src.exceptions import BrowserError
+from src.exceptions import BrowserError, ChromeNotFoundError
+from src.logger import get_logger
+
+# Directory layout for the dedicated ArchitectOS browser profile:
+#     <data_dir>/chrome-profile/ArchitectOS
+# The root is separate from the user's own Chrome user data directory so
+# ArchitectOS never contends with, or writes into, normal browsing.
+AUTOMATION_ROOT_DIRNAME = "chrome-profile"
+ARCHITECTOS_PROFILE_NAME = "ArchitectOS"
 
 
 class ChromeProfileConfig(BaseModel):
@@ -213,9 +221,23 @@ class ChromeProfile:
             if resolved:
                 return cls._validate_executable(Path(resolved))
 
-        raise BrowserError(
-            "Google Chrome executable was not found. Provide "
-            "ChromeProfileConfig(executable_path=...) to select it manually.",
+        searched = "\n".join(
+            f"      {path}"
+            for path in cls._candidate_executables(profile_config)
+        )
+        raise ChromeNotFoundError(
+            "Google Chrome could not be found on this system.\n"
+            "    ArchitectOS uses your installed Google Chrome rather "
+            "than a bundled browser.\n"
+            "    Searched:\n"
+            f"{searched}\n"
+            "    Fix this by either:\n"
+            "      - installing Google Chrome from "
+            "https://www.google.com/chrome/, or\n"
+            "      - setting CHROME_PATH in your .env to the full path of "
+            "chrome.exe\n"
+            "        (for example: C:\\Program Files\\Google\\Chrome\\"
+            "Application\\chrome.exe)",
             code="CHROME_EXECUTABLE_NOT_FOUND",
         )
 
@@ -259,26 +281,101 @@ class ChromeProfile:
         base_dir: Path,
     ) -> Path:
         """
-        Return a dedicated user data root for an automation profile.
+        Return the dedicated Chrome user data root for ArchitectOS.
 
         Chrome's singleton lock covers the whole user data root, not the
         individual profile folder inside it. Reusing the user's default
         root therefore fails whenever their normal Chrome is open, so
-        automation profiles get their own root under the application data
-        directory.
+        ArchitectOS gets its own root under the application data
+        directory. The named profile lives inside it:
+
+            <data_dir>/chrome-profile/<profile_name>
 
         Args:
-            profile_name: Automation profile name.
+            profile_name: Profile folder name inside the root.
             base_dir: Application data directory.
 
         Returns:
-            Dedicated Chrome user data root for the automation profile.
+            Dedicated Chrome user data root.
         """
-        return (
-            Path(base_dir).expanduser()
-            / "chrome-profiles"
-            / profile_name.strip()
+        return Path(base_dir).expanduser() / AUTOMATION_ROOT_DIRNAME
+
+    @classmethod
+    def legacy_user_data_dirs(cls, base_dir: Path) -> list[Path]:
+        """
+        Return user data roots used by earlier versions.
+
+        Args:
+            base_dir: Application data directory.
+
+        Returns:
+            Candidate legacy roots, newest layout first.
+        """
+        root = Path(base_dir).expanduser()
+        return [root / "chrome-profiles" / "automation"]
+
+    @classmethod
+    def migrate_legacy_profile(
+        cls,
+        base_dir: Path,
+        profile_directory: str = ARCHITECTOS_PROFILE_NAME,
+    ) -> Optional[Path]:
+        """
+        Move a profile from a previous layout into the current one.
+
+        Existing signed-in sessions are valuable: discarding them would
+        force the user to authenticate every provider again. When a legacy
+        profile exists and the current one does not, it is moved rather
+        than copied or deleted, so authentication survives the migration
+        and no duplicate is left behind.
+
+        Nothing is ever removed. If the current profile already exists the
+        legacy one is left untouched for the user to inspect.
+
+        Args:
+            base_dir: Application data directory.
+            profile_directory: Profile folder name to migrate into.
+
+        Returns:
+            Destination path when a migration happened, otherwise None.
+        """
+        logger = get_logger(__name__)
+        destination_root = cls.automation_user_data_dir(
+            profile_name=profile_directory, base_dir=base_dir
         )
+        destination = destination_root / profile_directory
+
+        if destination.exists():
+            return None
+
+        for legacy_root in cls.legacy_user_data_dirs(base_dir):
+            legacy_profile = legacy_root / "Default"
+            if not legacy_profile.is_dir():
+                continue
+
+            try:
+                destination_root.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(legacy_profile), str(destination))
+            except OSError as exc:
+                logger.warning(
+                    "Could not migrate the existing browser profile from "
+                    "%s to %s: %s. A new profile will be created and you "
+                    "will need to sign in again.",
+                    legacy_profile,
+                    destination,
+                    exc,
+                )
+                return None
+
+            logger.info(
+                "Migrated existing browser profile from %s to %s; "
+                "signed-in sessions were preserved",
+                legacy_profile,
+                destination,
+            )
+            return destination
+
+        return None
 
     @classmethod
     def validate_profile(
@@ -355,17 +452,35 @@ class ChromeProfile:
 
         return profile_path
 
-    def launch_args(self) -> list[str]:
+    def launch_args(self, maximized: bool = True) -> list[str]:
         """
         Return Chrome launch arguments for this profile.
 
+        The flags keep the window behaving like an ordinary Chrome
+        install: the profile is selected explicitly, first-run and default
+        browser interstitials are suppressed, and the automation banner is
+        removed so the UI matches what the user expects while signing in.
+
+        Args:
+            maximized: Whether to open the window maximized.
+
         Returns:
-            List of Chrome arguments needed to select the profile.
+            Chrome arguments.
         """
-        return [
+        args = [
             f"--profile-directory={self.profile_directory}",
             "--no-first-run",
+            "--no-default-browser-check",
+            # Removes the "Chrome is being controlled by automated test
+            # software" infobar and the navigator.webdriver flag. Sites
+            # that gate sign-in on automation signals are less likely to
+            # refuse the session.
+            "--disable-blink-features=AutomationControlled",
+            "--disable-features=Translate",
         ]
+        if maximized:
+            args.append("--start-maximized")
+        return args
 
     @classmethod
     def _validate_executable(cls, executable_path: Path) -> Path:

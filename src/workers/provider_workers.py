@@ -26,7 +26,15 @@ from src.browser import (
 
 from .base_worker import WorkerConfig
 from .chat_site import ChatSiteConfig
-from .providers import CLAUDE_SITE, GEMINI_SITE, GROK_SITE
+from .providers import (
+    CLAUDE_SITE,
+    DEEPSEEK_SITE,
+    GEMINI_SITE,
+    GROK_SITE,
+    MISTRAL_SITE,
+    PERPLEXITY_SITE,
+    QWEN_SITE,
+)
 from .web_chat_worker import WebChatWorker
 
 
@@ -95,8 +103,40 @@ class GrokWorker(_ProviderWorker):
     WORKER_NAME = GROK_SITE.name
 
 
+class DeepSeekWorker(_ProviderWorker):
+    """Worker that consults DeepSeek through the browser."""
+
+    SITE = DEEPSEEK_SITE
+    WORKER_NAME = DEEPSEEK_SITE.name
+
+
+class PerplexityWorker(_ProviderWorker):
+    """Worker that consults Perplexity through the browser."""
+
+    SITE = PERPLEXITY_SITE
+    WORKER_NAME = PERPLEXITY_SITE.name
+
+
+class MistralWorker(_ProviderWorker):
+    """Worker that consults Mistral through the browser."""
+
+    SITE = MISTRAL_SITE
+    WORKER_NAME = MISTRAL_SITE.name
+
+
+class QwenWorker(_ProviderWorker):
+    """Worker that consults Qwen Chat through the browser."""
+
+    SITE = QWEN_SITE
+    WORKER_NAME = QWEN_SITE.name
+
+
 __all__ = [
     "ClaudeWorker",
+    "DeepSeekWorker",
     "GeminiWorker",
     "GrokWorker",
+    "MistralWorker",
+    "PerplexityWorker",
+    "QwenWorker",
 ]

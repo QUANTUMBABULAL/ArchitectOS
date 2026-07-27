@@ -1,0 +1,15 @@
+2026/07/27-23:16:43.010 9138 Reusing MANIFEST C:\Users\CHINMAI\Desktop\AI-Research-Operator\data\chrome-profile\ArchitectOS\IndexedDB\https_chat.deepseek.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/27-23:16:43.013 9138 Recovering log #45
+2026/07/27-23:16:43.015 9138 Reusing old log C:\Users\CHINMAI\Desktop\AI-Research-Operator\data\chrome-profile\ArchitectOS\IndexedDB\https_chat.deepseek.com_0.indexeddb.leveldb/000045.log 
+2026/07/27-23:16:43.016 9138 Delete type=2 #44
+2026/07/27-23:16:43.023 90cc Manual compaction at level-0 from '\x00\x10\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x11\x00\x00\x00' @ 0 : 0; will stop at (end)
+2026/07/27-23:16:43.086 9950 Level-0 table #50: started
+2026/07/27-23:16:43.090 9950 Level-0 table #50: 2294 bytes OK
+2026/07/27-23:16:43.094 9950 Delete type=0 #45
+2026/07/27-23:16:43.098 9138 Manual compaction at level-0 from '\x00\x13\x00\x00\x00' @ 72057594037927935 : 1 .. '\x00\x14\x00\x00\x00' @ 0 : 0; will stop at '\x00\x13\x00\x00\xc8\x0f\x00h\x00i\x00s\x00t\x00o\x00r\x00y\x00-\x00m\x00e\x00s\x00s\x00a\x00g\x00e' @ 1473 : 1
+2026/07/27-23:16:43.098 9138 Compacting 1@0 + 1@1 files
+2026/07/27-23:16:43.101 9138 Generated table #51@0: 102 keys, 1423 bytes
+2026/07/27-23:16:43.101 9138 Compacted 1@0 + 1@1 files => 1423 bytes
+2026/07/27-23:16:43.102 9138 compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/07/27-23:16:43.102 9138 Delete type=2 #50
+2026/07/27-23:16:43.104 9138 Manual compaction at level-0 from '\x00\x13\x00\x00\xc8\x0f\x00h\x00i\x00s\x00t\x00o\x00r\x00y\x00-\x00m\x00e\x00s\x00s\x00a\x00g\x00e' @ 1473 : 1 .. '\x00\x14\x00\x00\x00' @ 0 : 0; will stop at (end)

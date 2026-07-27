@@ -48,22 +48,16 @@ CHATGPT_SITE = ChatSiteConfig(
     verified=True,
 )
 
-# Claude ships disabled rather than deleted. Its interface is behind a
-# Cloudflare human-verification challenge that browser automation cannot
-# clear, so every attempt produced a paused provider, a recovery cycle,
-# and log noise for no benefit. The configuration below stays complete and
-# correct: adding "claude" to ENABLED_PROVIDERS is all that is needed to
-# bring it back if that challenge is ever lifted or a manual session
-# proves durable.
+# Claude was previously disabled because its Cloudflare challenge caused
+# repeated failed recovery cycles. The authentication framework now models
+# that case directly: a challenge produces CAPTCHA_REQUIRED, which pauses
+# the provider for manual resolution instead of restarting it. Claude
+# therefore runs on exactly the same lifecycle as every other provider,
+# with no provider-specific handling anywhere.
 CLAUDE_SITE = ChatSiteConfig(
     name="claude",
     display_name="Claude",
     base_url="https://claude.ai/new",
-    enabled_by_default=False,
-    disabled_reason=(
-        "Cloudflare human-verification challenge cannot be cleared by "
-        "browser automation"
-    ),
     composer_selector='div[contenteditable="true"].ProseMirror',
     send_button_selector='button[aria-label*="Send"]',
     stop_button_selector='button[aria-label*="Stop"]',

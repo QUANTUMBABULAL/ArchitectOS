@@ -36,7 +36,13 @@ from src.exceptions import (
 )
 from src.logger import get_logger
 
-from .auth import AuthState, AuthStatus, expiry_notice, login_prompt
+from .auth import (
+    AuthState,
+    AuthStatus,
+    challenge_prompt,
+    expiry_notice,
+    login_prompt,
+)
 from .base_worker import (
     BaseWorker,
     WorkerConfig,
@@ -245,10 +251,7 @@ class WebChatWorker(BaseWorker):
                 return self._record_auth(
                     AuthState.CAPTCHA_REQUIRED,
                     "Human verification challenge displayed",
-                    action=(
-                        f"Solve the challenge for {display} in the "
-                        f"automation Chrome window, then run /login."
-                    ),
+                    action=challenge_prompt(display),
                 )
 
             if await self._login_wall_visible(page):
@@ -362,6 +365,7 @@ class WebChatWorker(BaseWorker):
         return AuthStatus(
             provider=self._site.name,
             state=state,
+            display_name=self._site.display_name,
             detail=detail,
             action=action,
         )

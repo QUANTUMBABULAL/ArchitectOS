@@ -1,0 +1,7 @@
+2026/07/27-23:43:52.811 5b5c Reusing MANIFEST C:\Users\CHINMAI\Desktop\AI-Research-Operator\data\chrome-profile\ArchitectOS\IndexedDB\https_chatgpt.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/07/27-23:43:52.812 5b5c Recovering log #3
+2026/07/27-23:43:52.813 5b5c Reusing old log C:\Users\CHINMAI\Desktop\AI-Research-Operator\data\chrome-profile\ArchitectOS\IndexedDB\https_chatgpt.com_0.indexeddb.leveldb/000003.log 
+2026/07/27-23:44:00.352 5278 Level-0 table #5: started
+2026/07/27-23:44:00.356 5278 Level-0 table #5: 1682 bytes OK
+2026/07/27-23:44:00.361 5278 Delete type=0 #3
+2026/07/27-23:44:00.364 5278 Manual compaction at level-0 from (begin) .. (end); will stop at (end)

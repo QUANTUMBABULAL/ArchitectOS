@@ -41,39 +41,48 @@ def registry(
     )
 
 
-class TestClaudeIsDisabled:
-    """Claude must not participate, without being deleted."""
+class TestClaudeIsEnabled:
+    """
+    Claude now runs on the shared authentication framework.
 
-    def test_claude_ships_disabled(self) -> None:
-        """Claude is excluded when no configuration is supplied."""
-        assert "claude" not in registry().enabled_names()
-        assert "claude" in registry().disabled_names()
+    It was previously disabled because its Cloudflare challenge caused
+    endless failed recovery. The auth state machine models that case
+    directly (CAPTCHA_REQUIRED pauses rather than restarts), so Claude
+    needs no special handling and participates like any other provider.
+    """
 
-    def test_claude_default_is_recorded_on_the_site(self) -> None:
-        """The default lives on the site config, not in scattered checks."""
-        assert CLAUDE_SITE.enabled_by_default is False
-        assert "cloudflare" in CLAUDE_SITE.disabled_reason.lower()
+    def test_claude_participates_by_default(self) -> None:
+        """Claude is enabled when no configuration is supplied."""
+        assert "claude" in registry().enabled_names()
+        assert "claude" not in registry().disabled_names()
 
-    def test_claude_code_is_still_present(self) -> None:
-        """
-        Disabling is configuration, not deletion. The site config must
-        remain complete so re-enabling requires no code change.
-        """
+    def test_claude_carries_no_disabled_marker(self) -> None:
+        """The old default-disabled marker is gone from the site config."""
+        assert CLAUDE_SITE.enabled_by_default is True
+        assert CLAUDE_SITE.disabled_reason == ""
+
+    def test_claude_config_is_complete(self) -> None:
+        """Claude has every selector the shared worker requires."""
         assert "claude" in PROVIDER_SITES
         assert CLAUDE_SITE.composer_selector
         assert CLAUDE_SITE.assistant_message_selector
+        assert CLAUDE_SITE.login_wall_selector
         assert CLAUDE_SITE.base_url.startswith("https://")
 
-    def test_claude_can_be_re_enabled_by_configuration_alone(self) -> None:
-        """Naming Claude in the enabled list is sufficient to restore it."""
-        resolved = registry(enabled=["chatgpt", "claude"], disabled=[])
-        assert "claude" in resolved.enabled_names()
-        assert resolved.is_enabled("claude") is True
+    def test_claude_can_still_be_disabled_by_configuration(self) -> None:
+        """Disabling remains available without touching code."""
+        resolved = registry(enabled=None, disabled=["claude"])
+        assert resolved.is_enabled("claude") is False
 
-    def test_default_lists_agree_with_registry(self) -> None:
-        """The helper functions and the registry cannot drift apart."""
-        assert "claude" in default_disabled_providers()
-        assert "claude" not in default_enabled_providers()
+    def test_deepseek_participates_by_default(self) -> None:
+        """DeepSeek joins on the same terms."""
+        assert "deepseek" in registry().enabled_names()
+
+    def test_no_provider_ships_disabled(self) -> None:
+        """Every provider now runs on the shared auth lifecycle."""
+        assert default_disabled_providers() == []
+        assert "claude" in default_enabled_providers()
+        assert "deepseek" in default_enabled_providers()
 
 
 class TestResolutionPrecedence:
@@ -100,6 +109,20 @@ class TestResolutionPrecedence:
         assert set(resolved.enabled_names()) == set(
             default_enabled_providers()
         )
+
+    def test_the_five_specified_providers_resolve(self) -> None:
+        """The requested provider set resolves in the configured order."""
+        resolved = registry(
+            enabled=["chatgpt", "gemini", "grok", "claude", "deepseek"],
+            disabled=[],
+        )
+        assert resolved.enabled_names() == [
+            "chatgpt",
+            "gemini",
+            "grok",
+            "claude",
+            "deepseek",
+        ]
 
     def test_order_follows_configuration(self) -> None:
         """Tab-open order is the operator's choice."""
@@ -187,7 +210,9 @@ class TestRequireEnabled:
     def test_raises_for_disabled(self) -> None:
         """Requesting a disabled provider is an explicit error."""
         with pytest.raises(WorkerError) as excinfo:
-            registry().require_enabled("claude")
+            registry(enabled=None, disabled=["claude"]).require_enabled(
+                "claude"
+            )
         assert excinfo.value.code == "PROVIDER_DISABLED"
 
     def test_raises_for_unknown(self) -> None:

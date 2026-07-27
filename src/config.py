@@ -95,8 +95,19 @@ class Settings(BaseModel):
     )
 
     automation_profile: str = Field(
-        default="automation",
-        description="Named Chrome automation profile to use for launch mode",
+        default="ArchitectOS",
+        description=(
+            "Chrome profile folder used by ArchitectOS, stored under "
+            "DATA_DIR/chrome-profile/. Never the user's normal profile"
+        ),
+    )
+
+    browser_maximized: bool = Field(
+        default=True,
+        description=(
+            "Open Chrome maximized with no fixed viewport, so the window "
+            "behaves like an ordinary Chrome session"
+        ),
     )
 
     remote_debug_port: int = Field(
@@ -307,7 +318,7 @@ class Settings(BaseModel):
     # ========================================================================
 
     enabled_providers: str = Field(
-        default="chatgpt,gemini,grok",
+        default="chatgpt,gemini,grok,claude,deepseek",
         description=(
             "Comma-separated providers that participate in research, in "
             "tab-open order. Leave empty to enable every provider that "
@@ -316,7 +327,7 @@ class Settings(BaseModel):
     )
 
     disabled_providers: str = Field(
-        default="claude",
+        default="",
         description=(
             "Comma-separated providers that must never launch, be "
             "monitored, be recovered, or appear in consensus. Takes "

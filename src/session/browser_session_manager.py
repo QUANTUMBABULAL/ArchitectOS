@@ -41,6 +41,7 @@ from src.workers import (
     AuthState,
     AuthStatus,
     ProviderRegistry,
+    render_dashboard,
     WorkerManager,
     WorkerQuery,
     WorkerResponse,
@@ -143,6 +144,7 @@ class BrowserSessionManager:
         self._failures: dict[str, str] = {}
         self._paused: dict[str, str] = {}
         self._monitor_task: Optional[asyncio.Task[None]] = None
+        self._auth_task: Optional[asyncio.Task[None]] = None
         self._closing = False
         self._stats = SessionStats()
 
@@ -212,13 +214,45 @@ class BrowserSessionManager:
 
         # Startup ends with a verified picture rather than an assumed
         # one: launch -> profile -> tabs -> verify auth -> ready.
-        await self.verify_authentication()
+        statuses = await self.verify_authentication()
         ready = self.ready_providers()
+
+        print()
+        print(render_dashboard(list(statuses.values())))
 
         if ready:
             self._start_monitor()
 
+        # Started even with nothing ready: a provider blocked on sign-in
+        # can still be promoted once the user finishes.
+        if self._paused:
+            self._start_auth_watcher()
+
         return ready
+
+    def dashboard(self, statuses: Optional[list[AuthStatus]] = None) -> str:
+        """
+        Render the provider status dashboard.
+
+        Args:
+            statuses: Optional snapshots to render. When omitted the last
+                observed state of each provider is used, which avoids
+                touching provider pages just to draw a table.
+
+        Returns:
+            Framed dashboard text.
+        """
+        if statuses is None:
+            statuses = [
+                AuthStatus(
+                    provider=name,
+                    state=self._provider(name).auth_state,
+                    display_name=self._provider(name).display_name,
+                )
+                for name in self._provider_names
+                if name in self._workers.worker_names
+            ]
+        return render_dashboard(statuses)
 
     async def close(self) -> None:
         """
@@ -229,6 +263,8 @@ class BrowserSessionManager:
         """
         self._closing = True
         await self._stop_monitor()
+        await self._stop_task(self._auth_task)
+        self._auth_task = None
 
         try:
             await self._workers.stop_all()
@@ -331,9 +367,11 @@ class BrowserSessionManager:
                 self._logger.info("%s ready", display)
             except ProviderAuthError as exc:
                 # Not a failure: the provider is fine, it just needs a
-                # human. Wait for the sign-in rather than giving up.
-                if await self._await_login(name, str(exc)):
-                    ready.append(name)
+                # human. Startup must not stall waiting for one, so the
+                # provider is paused and the background auth watcher
+                # promotes it the moment sign-in succeeds.
+                self.pause_provider(name, "Sign-in required")
+                print(f"\n{exc}\n")
             except ProviderChallengeError as exc:
                 self.pause_provider(name, str(exc))
             except Exception as exc:
@@ -356,6 +394,10 @@ class BrowserSessionManager:
         """
         Prompt for a manual sign-in and wait for it to complete.
 
+        Blocking variant, used only when the operator explicitly asks to
+        wait. Startup never calls this: it pauses the provider and lets
+        the background watcher promote it instead.
+
         The provider's tab is already open at its sign-in page. Nothing is
         typed or clicked: the user signs in themselves and the session is
         detected when it appears. Credentials are never seen by
@@ -371,7 +413,7 @@ class BrowserSessionManager:
         worker = self._provider(name)
         budget = self._settings.login_wait_seconds
 
-        print(f"\n[!] {instruction}\n")
+        print(f"\n{instruction}\n")
         self._logger.warning(
             "%s requires manual sign-in", worker.display_name
         )
@@ -386,15 +428,85 @@ class BrowserSessionManager:
         )
 
         if status.is_ready:
-            print(f"[+] {worker.display_name} signed in — continuing.")
-            self._paused.pop(name, None)
-            self._failures.pop(name, None)
+            self._promote(name)
             return True
 
         self.pause_provider(
             name, status.detail or "Sign-in not completed in time"
         )
         return False
+
+    def _promote(self, name: str) -> None:
+        """
+        Mark a provider as authenticated and available for research.
+
+        A promoted provider is immediately eligible for dispatch, so it
+        can join a research session that is already running without any
+        restart, reload, or new tab.
+
+        Args:
+            name: Provider name.
+        """
+        worker = self._provider(name)
+        self._paused.pop(name, None)
+        self._failures.pop(name, None)
+        print(f"🟢 {worker.display_name} READY")
+        self._logger.info(
+            "%s authenticated and joined the session", worker.display_name
+        )
+
+    async def pending_auth(self) -> list[str]:
+        """
+        Return providers waiting on manual authentication.
+
+        Returns:
+            Names of providers in LOGIN_REQUIRED or CAPTCHA_REQUIRED.
+        """
+        pending: list[str] = []
+        for name in self._provider_names:
+            if name not in self._workers.worker_names:
+                continue
+            if self._provider(name).auth_state.needs_human:
+                pending.append(name)
+        return pending
+
+    async def poll_pending_auth(self) -> list[str]:
+        """
+        Check providers awaiting sign-in and promote any that succeeded.
+
+        Never restarts, reloads, or replaces a tab: doing so would discard
+        the page the user is signing in on. Only observes.
+
+        Returns:
+            Names of providers promoted to ready.
+        """
+        promoted: list[str] = []
+
+        for name in list(self._paused):
+            if name not in self._workers.worker_names:
+                continue
+
+            worker = self._provider(name)
+            previous = worker.auth_state
+            try:
+                status = await worker.check_auth()
+            except Exception as exc:
+                self._logger.debug(
+                    "Auth poll for %s failed: %s", name, exc
+                )
+                continue
+
+            if status.is_ready:
+                self._promote(name)
+                promoted.append(name)
+                continue
+
+            # Surface a change of blocking reason, for example a
+            # challenge clearing to reveal a sign-in form underneath.
+            if status.state is not previous and status.action:
+                print(f"\n{status.action}\n")
+
+        return promoted
 
     async def verify_authentication(self) -> dict[str, AuthStatus]:
         """
@@ -576,6 +688,10 @@ class BrowserSessionManager:
             name,
             reason,
         )
+        # A provider blocked mid-session must still be able to rejoin, so
+        # the watcher is (re)started whenever anything becomes pending.
+        if not self._closing:
+            self._start_auth_watcher()
 
     def resume_provider(self, name: str) -> bool:
         """
@@ -1026,6 +1142,61 @@ class BrowserSessionManager:
     # Health monitoring and recovery
     # ------------------------------------------------------------------
 
+    def _start_auth_watcher(self) -> None:
+        """
+        Start the background authentication watcher if it is not running.
+
+        The watcher is what makes startup non-blocking: providers that
+        need a sign-in are paused immediately, and this task promotes them
+        the moment the user finishes, without restarting ArchitectOS or
+        touching the tab.
+        """
+        if (
+            self._auth_task is not None
+            and not self._auth_task.done()
+        ):
+            return
+        if self._settings.login_poll_seconds <= 0:
+            return
+
+        self._auth_task = asyncio.create_task(self._auth_watch_loop())
+        self._logger.info(
+            "Authentication watcher started (every %.0fs)",
+            self._settings.login_poll_seconds,
+        )
+
+    async def _auth_watch_loop(self) -> None:
+        """
+        Poll providers awaiting sign-in until none remain.
+
+        Exits once nothing is pending, and is restarted whenever a
+        provider becomes blocked again.
+        """
+        interval = max(1.0, self._settings.login_poll_seconds)
+
+        while not self._closing:
+            try:
+                await asyncio.sleep(interval)
+            except asyncio.CancelledError:
+                return
+
+            if self._closing:
+                return
+            if not self._paused:
+                self._logger.debug(
+                    "No providers awaiting authentication; watcher idle"
+                )
+                return
+
+            try:
+                await self.poll_pending_auth()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                self._logger.warning(
+                    "Authentication watcher iteration failed: %s", exc
+                )
+
     def _start_monitor(self) -> None:
         """Start the background health monitor if it is not running."""
         if self._monitor_task is not None and not self._monitor_task.done():
@@ -1045,6 +1216,18 @@ class BrowserSessionManager:
         """Cancel the background health monitor and wait for it to exit."""
         task = self._monitor_task
         self._monitor_task = None
+        await self._stop_task(task)
+
+    async def _stop_task(
+        self,
+        task: Optional[asyncio.Task[None]],
+    ) -> None:
+        """
+        Cancel a background task and wait for it to finish.
+
+        Args:
+            task: Task to cancel. None and finished tasks are ignored.
+        """
         if task is None or task.done():
             return
 
@@ -1054,7 +1237,7 @@ class BrowserSessionManager:
         except asyncio.CancelledError:
             pass
         except Exception as exc:
-            self._logger.warning("Health monitor exited with: %s", exc)
+            self._logger.warning("Background task exited with: %s", exc)
 
     async def _monitor_loop(self) -> None:
         """

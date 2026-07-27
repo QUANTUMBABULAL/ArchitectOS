@@ -8,7 +8,15 @@ provider registry, and the registry/dispatcher (WorkerManager) keep the
 orchestration layer independent of any concrete website.
 """
 
-from .auth import AuthState, AuthStatus, expiry_notice, login_prompt
+from .auth import (
+    AuthState,
+    AuthStatus,
+    challenge_prompt,
+    expiry_notice,
+    login_prompt,
+    render_dashboard,
+    state_glyph,
+)
 from .base_worker import (
     BaseWorker,
     WorkerConfig,
@@ -20,7 +28,15 @@ from .base_worker import (
 from .chat_site import ChatSiteConfig
 from .chatgpt_worker import ChatGPTWorker, ChatGPTWorkerConfig
 from .conversation import ConversationState
-from .provider_workers import ClaudeWorker, GeminiWorker, GrokWorker
+from .provider_workers import (
+    ClaudeWorker,
+    DeepSeekWorker,
+    GeminiWorker,
+    GrokWorker,
+    MistralWorker,
+    PerplexityWorker,
+    QwenWorker,
+)
 from .providers import (
     CHATGPT_SITE,
     CLAUDE_SITE,
@@ -58,13 +74,17 @@ __all__ = [
     "ConversationState",
     "DEEPSEEK_SITE",
     "DEFAULT_PROVIDER",
+    "DeepSeekWorker",
     "DisableReason",
     "GEMINI_SITE",
     "GROK_SITE",
     "GeminiWorker",
     "GrokWorker",
     "MISTRAL_SITE",
+    "MistralWorker",
     "PERPLEXITY_SITE",
+    "PerplexityWorker",
+    "QwenWorker",
     "PROVIDER_SITES",
     "ProviderRegistration",
     "ProviderRegistry",
@@ -79,11 +99,14 @@ __all__ = [
     "available_providers",
     "build_registry",
     "build_worker",
+    "challenge_prompt",
     "default_disabled_providers",
     "default_enabled_providers",
     "expiry_notice",
     "get_site",
     "login_prompt",
+    "render_dashboard",
+    "state_glyph",
     "parse_provider_list",
     "verified_providers",
 ]

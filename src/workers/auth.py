@@ -90,6 +90,8 @@ class AuthStatus:
         provider: Provider name.
         state: Authentication state.
         checked_at: When the check ran.
+        display_name: Human-readable provider name for operator output.
+            Falls back to the provider name when unset.
         detail: Human-readable explanation, shown to the operator.
         action: What the user should do, when action is needed.
     """
@@ -99,8 +101,14 @@ class AuthStatus:
     checked_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
+    display_name: str = ""
     detail: str = ""
     action: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        """Default the display name to the provider name."""
+        if not self.display_name:
+            object.__setattr__(self, "display_name", self.provider)
 
     @property
     def is_ready(self) -> bool:
@@ -123,6 +131,23 @@ class AuthStatus:
         return f"{self.provider}: {self.state.value}{suffix}"
 
 
+_BANNER_WIDTH = 49
+
+
+def _banner(lines: list[str]) -> str:
+    """
+    Wrap operator instructions in a delimited block.
+
+    Args:
+        lines: Message lines.
+
+    Returns:
+        Framed message.
+    """
+    rule = "-" * _BANNER_WIDTH
+    return "\n".join([rule, *lines, rule])
+
+
 def login_prompt(display_name: str, url: str) -> str:
     """
     Build the operator instruction for a first-time sign-in.
@@ -134,14 +159,37 @@ def login_prompt(display_name: str, url: str) -> str:
     Returns:
         Instruction text.
     """
-    return (
-        f"Please log into {display_name} manually.\n"
-        f"    A tab is already open at {url} in the automation Chrome "
-        f"window.\n"
-        f"    Sign in there; ArchitectOS will detect it and continue "
-        f"automatically.\n"
-        f"    Your credentials are never seen or stored by ArchitectOS — "
-        f"the session lives only in the browser profile."
+    return _banner(
+        [
+            f"{display_name} requires authentication.",
+            "A browser tab has already been opened.",
+            "Please complete login manually.",
+            "ArchitectOS is waiting...",
+            "",
+            f"Tab: {url}",
+            "Credentials are never seen or stored by ArchitectOS;",
+            "the session lives only in the browser profile.",
+        ]
+    )
+
+
+def challenge_prompt(display_name: str) -> str:
+    """
+    Build the operator instruction for a human-verification challenge.
+
+    Args:
+        display_name: Human-readable provider name.
+
+    Returns:
+        Instruction text.
+    """
+    return _banner(
+        [
+            f"{display_name} requires human verification.",
+            "Please complete verification manually.",
+            "ArchitectOS will automatically continue when",
+            "authentication succeeds.",
+        ]
     )
 
 
@@ -155,16 +203,73 @@ def expiry_notice(display_name: str) -> str:
     Returns:
         Notice text.
     """
-    return (
-        f"{display_name} session expired.\n"
-        f"    Please log in again in the automation Chrome window. Other "
-        f"providers are unaffected and research continues without it."
+    return _banner(
+        [
+            f"{display_name} session expired.",
+            "Please log in again in the automation Chrome window.",
+            "Other providers are unaffected and research continues",
+            "without it. ArchitectOS will continue automatically once",
+            "authentication succeeds.",
+        ]
     )
+
+
+# Status glyphs for the provider dashboard, one per authentication state.
+_STATE_GLYPHS: dict[AuthState, str] = {
+    AuthState.READY: "🟢",
+    AuthState.LOGIN_REQUIRED: "🟡",
+    AuthState.CAPTCHA_REQUIRED: "🟡",
+    AuthState.RECOVERING: "🔵",
+    AuthState.OFFLINE: "🔴",
+    AuthState.UNKNOWN: "⚪",
+}
+
+
+def state_glyph(state: AuthState) -> str:
+    """
+    Return the dashboard glyph for an authentication state.
+
+    Args:
+        state: Authentication state.
+
+    Returns:
+        Single-character status indicator.
+    """
+    return _STATE_GLYPHS.get(state, "⚪")
+
+
+def render_dashboard(statuses: list[AuthStatus]) -> str:
+    """
+    Render the provider status dashboard.
+
+    Args:
+        statuses: Authentication snapshots, in display order.
+
+    Returns:
+        Framed dashboard text.
+    """
+    rule = "=" * 37
+    lines = [rule, "Provider Status", rule]
+
+    if not statuses:
+        lines.append("(no providers configured)")
+    else:
+        for status in statuses:
+            glyph = state_glyph(status.state)
+            lines.append(
+                f"{glyph} {status.display_name:<14} {status.state.value}"
+            )
+
+    lines.append(rule)
+    return "\n".join(lines)
 
 
 __all__ = [
     "AuthState",
     "AuthStatus",
+    "challenge_prompt",
     "expiry_notice",
     "login_prompt",
+    "render_dashboard",
+    "state_glyph",
 ]
