@@ -11,7 +11,13 @@
     "bundle": {
       "active": true,
       "identifier": "dev.architectos.desktop",
-      "targets": ["msi", "nsis"]
+      "targets": ["msi", "nsis"],
+      "icon": [
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+        "icons/icon.ico"
+      ]
     },
     "security": {
       "csp": "default-src 'self'; connect-src 'self' ws://127.0.0.1:8777 http://127.0.0.1:8777; style-src 'self' 'unsafe-inline'"

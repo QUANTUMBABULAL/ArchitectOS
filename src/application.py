@@ -191,6 +191,22 @@ class ResearchOperatorApp:
         return self._orchestrator
 
     @property
+    def session(self) -> BrowserSessionManager:
+        """
+        Return the persistent browser session manager.
+
+        The session manager is the public surface for provider state:
+        enabled/disabled/paused providers, authentication status, recovery,
+        and conversation resets. Interfaces such as the WebSocket bridge
+        read provider state through this property rather than reaching into
+        private attributes.
+
+        Returns:
+            Browser session manager instance.
+        """
+        return self._session
+
+    @property
     def is_initialized(self) -> bool:
         """
         Return whether the application has been initialized.

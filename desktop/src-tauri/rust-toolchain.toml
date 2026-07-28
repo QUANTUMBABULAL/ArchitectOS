@@ -1,0 +1,26 @@
+# Pinned build toolchain.
+#
+# rustup reads this file and installs the named toolchain automatically on
+# first build, so `npm run tauri:dev` works without anyone running a
+# manual update command.
+#
+# Why 1.88 and not the 1.83 currently installed:
+#
+#   Tauri 1.8's dependency tree reaches idna_adapter 1.2.2, which declares
+#   `edition = "2024"` and `rust-version = "1.86"` (verified on crates.io).
+#   Cargo 1.83 cannot parse edition 2024 at all, which is the
+#   "feature `edition2024` is required" error.
+#
+#   Pinning the toolchain forward rather than pinning a dozen transitive
+#   crates backward is the durable fix. Rust editions are opt-in per
+#   crate: a newer compiler cannot break this crate's edition-2021 source.
+#
+#   Cargo 1.85+ additionally supports resolver v3, which makes the
+#   resolver respect each crate's rust-version. That prevents this entire
+#   class of failure from recurring, rather than deferring it.
+
+[toolchain]
+channel = "1.88.0"
+components = ["rustfmt", "clippy"]
+targets = ["x86_64-pc-windows-msvc"]
+profile = "minimal"
