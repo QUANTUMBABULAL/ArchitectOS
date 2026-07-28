@@ -1,0 +1,100 @@
+# ---------------------------------------------------------------------------
+# Browser profiles — NEVER COMMIT
+#
+# These directories hold live authentication material: cookies, OAuth
+# tokens, Local Storage, IndexedDB and session data for every provider you
+# have signed into. Committing them publishes your accounts.
+#
+# Both spellings are listed deliberately. The directory was renamed from
+# chrome-profiles/ to chrome-profile/ during development, and an ignore
+# rule that still named the old path is what allowed the profile to be
+# committed. The broad patterns below catch any future rename.
+# ---------------------------------------------------------------------------
+data/chrome-profile/
+data/chrome-profiles/
+**/chrome-profile/
+**/chrome-profiles/
+**/User Data/
+**/Local Storage/
+**/Session Storage/
+**/IndexedDB/
+**/Code Cache/
+**/Service Worker/
+**/*.ldb
+
+# Diagnostics may embed page HTML and screenshots of signed-in sessions.
+data/diagnostics/
+
+# ---------------------------------------------------------------------------
+# Secrets and local configuration
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+envs/
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.venv-*/
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ---------------------------------------------------------------------------
+# Databases and generated data
+# ---------------------------------------------------------------------------
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+data/*.db*
+.cache/
+logs/
+*.log
+
+# ---------------------------------------------------------------------------
+# Node and desktop build output
+# ---------------------------------------------------------------------------
+node_modules/
+desktop/node_modules/
+desktop/dist/
+desktop/.vite/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.tsbuildinfo
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini

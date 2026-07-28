@@ -1,0 +1,27 @@
+# Line endings.
+#
+# The "LF will be replaced by CRLF" warnings come from Git's autocrlf
+# setting converting on checkout. Normalizing here makes the behaviour
+# explicit and identical for everyone: text is stored as LF in the
+# repository, and Windows checkouts get CRLF where it matters.
+
+* text=auto eol=lf
+
+# Windows-native files keep CRLF in the working tree.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files must never be converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.db binary
+*.sqlite binary
+*.ldb binary
+*.exe binary
+*.dll binary

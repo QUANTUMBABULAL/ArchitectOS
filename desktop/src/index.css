@@ -1,0 +1,39 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-ink-950 text-slate-200 font-sans antialiased;
+    /* Subtle depth so panels read as layered surfaces rather than boxes. */
+    background-image:
+      radial-gradient(60rem 40rem at 15% -10%, rgba(109,140,255,.10), transparent 60%),
+      radial-gradient(50rem 35rem at 90% 5%, rgba(61,220,151,.06), transparent 60%);
+  }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { @apply bg-ink-600 rounded-full; }
+  ::-webkit-scrollbar-thumb:hover { @apply bg-ink-700; }
+}
+
+@layer components {
+  /* Glass is used only for floating surfaces, never for dense text. */
+  .glass {
+    @apply bg-ink-850/70 backdrop-blur-xl border border-white/[.06];
+  }
+  .card {
+    @apply glass rounded-2xl shadow-[0_1px_0_0_rgba(255,255,255,.04)_inset,0_18px_40px_-24px_rgba(0,0,0,.8)];
+  }
+  .nav-item {
+    @apply flex items-center gap-3 px-3 py-2 rounded-xl text-sm text-slate-400
+           transition-all duration-200 hover:text-slate-100 hover:bg-white/[.04];
+  }
+  .nav-item-active {
+    @apply text-slate-50 bg-white/[.07] shadow-[inset_0_0_0_1px_rgba(255,255,255,.06)];
+  }
+  .stream-caret::after {
+    content: "";
+    @apply inline-block w-[2px] h-[1.05em] ml-[3px] align-[-2px] bg-accent animate-pulse-soft;
+  }
+}
