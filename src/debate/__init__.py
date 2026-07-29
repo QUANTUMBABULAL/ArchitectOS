@@ -14,14 +14,17 @@ from .contradiction_engine import (
 )
 from .debate_engine import DebateEngine, DebateOutcome, DebateRound, StopReason
 from .report import render_report
+from .synthesis import FinalAnswer, build_final_answer
 
 __all__ = [
     "ContradictionEngine",
     "DebateEngine",
     "DebateOutcome",
     "DebateRound",
+    "FinalAnswer",
     "QuestionKind",
     "StopReason",
     "TargetedQuestion",
+    "build_final_answer",
     "render_report",
 ]

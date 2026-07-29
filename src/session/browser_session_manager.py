@@ -151,6 +151,9 @@ class BrowserSessionManager:
         self._auth_task: Optional[asyncio.Task[None]] = None
         self._closing = False
         self._stats = SessionStats()
+        self._response_times: dict[str, list[float]] = {}
+        self._last_activity: dict[str, datetime] = {}
+        self._browser_hidden = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -216,6 +219,11 @@ class BrowserSessionManager:
         await self._register_providers(self._session)
         ready = await self._initialize_providers()
 
+        # launch_persistent_context always opens one about:blank page.
+        # The first provider adopts it; anything still blank afterwards is
+        # a stray tab the user never asked for.
+        await self._close_stray_tabs()
+
         # Startup ends with a verified picture rather than an assumed
         # one: launch -> profile -> tabs -> verify auth -> ready.
         statuses = await self.verify_authentication()
@@ -231,6 +239,11 @@ class BrowserSessionManager:
         # can still be promoted once the user finishes.
         if self._paused:
             self._start_auth_watcher()
+
+        # With every provider signed in there is nothing to look at in
+        # Chrome: Mission Control is the interface, the browser is the
+        # engine. Show Browser restores the windows on demand.
+        self.maybe_auto_hide(ready)
 
         return ready
 
@@ -706,6 +719,11 @@ class BrowserSessionManager:
         if not self._closing:
             self._start_auth_watcher()
 
+        # A human has to act now, and they act in the browser. A hidden
+        # window would silently deadlock the session, so it is restored.
+        if self._browser_hidden:
+            self.show_browser()
+
     def resume_provider(self, name: str) -> bool:
         """
         Clear a provider's paused state.
@@ -940,6 +958,13 @@ class BrowserSessionManager:
                 timeout=timeout_seconds,
             )
 
+            elapsed = asyncio.get_running_loop().time() - started
+            self._last_activity[name] = datetime.now(timezone.utc)
+            if response.success:
+                times = self._response_times.setdefault(name, [])
+                times.append(round(elapsed, 2))
+                del times[:-20]  # keep a rolling window
+
             self._events.provider(
                 EventType.PROVIDER_FINISHED
                 if response.success
@@ -1063,6 +1088,287 @@ class BrowserSessionManager:
             ", ".join(overflowing),
         )
         return await self.reset_conversations(overflowing)
+
+    async def _close_stray_tabs(self) -> int:
+        """
+        Close blank tabs left over after providers have their pages.
+
+        Returns:
+            Number of tabs closed. Never raises: a stray tab is cosmetic
+            and must not fail session startup.
+        """
+        if self._session is None:
+            return 0
+        try:
+            from src.browser import TabManager
+
+            return await TabManager(self._session).close_blank_pages()
+        except Exception as exc:
+            self._logger.debug("Blank-tab sweep skipped: %s", exc)
+            return 0
+
+    # ------------------------------------------------------------------
+    # Browser visibility
+    #
+    # Chrome is the execution engine, not the interface. These methods
+    # hide and restore its OS windows; automation continues either way
+    # because Playwright drives pages over CDP, not through the window.
+    # ------------------------------------------------------------------
+
+    def _automation_user_data_dir(self) -> Optional[str]:
+        """
+        Return the user-data directory the running browser was launched
+        with, which is what identifies our Chrome processes.
+
+        Returns:
+            Directory path, or None when it cannot be determined.
+        """
+        if self._session is not None:
+            from_metadata = self._session.metadata.get("user_data_dir")
+            if from_metadata:
+                return str(from_metadata)
+        path = self.profile_path()
+        return str(path) if path is not None else None
+
+    def hide_browser(self) -> int:
+        """
+        Hide the automation browser windows.
+
+        Returns:
+            Number of windows hidden.
+        """
+        from src.browser.window_control import hide_browser_windows
+
+        count = hide_browser_windows(self._automation_user_data_dir())
+        if count:
+            self._browser_hidden = True
+        return count
+
+    def show_browser(self) -> int:
+        """
+        Restore the automation browser windows.
+
+        Returns:
+            Number of windows restored.
+        """
+        from src.browser.window_control import show_browser_windows
+
+        count = show_browser_windows(self._automation_user_data_dir())
+        if count:
+            self._browser_hidden = False
+        return count
+
+    @property
+    def browser_hidden(self) -> bool:
+        """
+        Return whether the automation browser is currently hidden.
+
+        Returns:
+            True after a successful hide with no restore since.
+        """
+        return self._browser_hidden
+
+    def maybe_auto_hide(self, ready: list[str]) -> None:
+        """
+        Hide the browser when configuration allows and nobody needs it.
+
+        The window stays visible whenever a provider is paused for a
+        sign-in or verification — hiding the only surface where a human
+        can act would deadlock the session.
+
+        Args:
+            ready: Providers that are ready.
+        """
+        if not self._settings.auto_hide_browser:
+            return
+        if not ready or self._paused:
+            return
+        self.hide_browser()
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+
+    def provider_capabilities(self) -> dict[str, frozenset[str]]:
+        """
+        Return each registered provider's declared capability tags.
+
+        Used by the research operator to match subtasks to the provider
+        best suited to answer them.
+
+        Returns:
+            Capability tags per provider name.
+        """
+        capabilities: dict[str, frozenset[str]] = {}
+        for name in self._workers.worker_names:
+            try:
+                capabilities[name] = frozenset(
+                    self._provider(name).capabilities
+                )
+            except Exception:
+                capabilities[name] = frozenset({"general"})
+        return capabilities
+
+    @property
+    def response_times(self) -> dict[str, dict[str, float]]:
+        """
+        Return per-provider response-time statistics.
+
+        Returns:
+            Mapping of provider to ``{"last", "avg", "count"}`` over a
+            rolling window of successful answers.
+        """
+        stats: dict[str, dict[str, float]] = {}
+        for name, times in self._response_times.items():
+            if not times:
+                continue
+            stats[name] = {
+                "last": times[-1],
+                "avg": round(sum(times) / len(times), 2),
+                "count": float(len(times)),
+            }
+        return stats
+
+    async def provider_diagnostics(self) -> list[dict[str, object]]:
+        """
+        Assemble the Browser Manager view: one record per provider.
+
+        Every field is read defensively; a provider that cannot answer a
+        probe reports None for that field rather than failing the page.
+
+        Returns:
+            JSON-compatible diagnostic records.
+        """
+        records: list[dict[str, object]] = []
+        now = datetime.now(timezone.utc)
+
+        for name in self._registry.enabled_names():
+            record: dict[str, object] = {
+                "name": name,
+                "displayName": name,
+                "registered": name in self._workers.worker_names,
+                "loggedIn": None,
+                "url": None,
+                "conversationId": None,
+                "turns": 0,
+                "sessionAgeSeconds": None,
+                "cookieCount": None,
+                "tabOpen": False,
+                "jsHeapBytes": None,
+                "lastActivity": None,
+                "paused": name in self._paused,
+                "pauseReason": self._paused.get(name),
+                "responseTimes": self.response_times.get(name),
+            }
+
+            worker: Optional[WebChatWorker] = None
+            try:
+                worker = self._provider(name)
+            except Exception:
+                records.append(record)
+                continue
+
+            record["displayName"] = worker.display_name
+            conversation = worker.conversation
+            record["conversationId"] = conversation.conversation_id
+            record["turns"] = conversation.turns
+            record["sessionAgeSeconds"] = round(
+                (now - conversation.started_at).total_seconds()
+            )
+            if conversation.last_prompt_at is not None:
+                record["lastActivity"] = (
+                    conversation.last_prompt_at.isoformat()
+                )
+            elif name in self._last_activity:
+                record["lastActivity"] = (
+                    self._last_activity[name].isoformat()
+                )
+
+            page = getattr(worker, "_page", None)
+            if page is not None and not page.is_closed():
+                record["tabOpen"] = True
+                try:
+                    record["url"] = page.url
+                except Exception:
+                    pass
+                try:
+                    record["loggedIn"] = await worker.is_logged_in()
+                except Exception:
+                    pass
+                try:
+                    cookies = await page.context.cookies(
+                        worker.site.base_url
+                    )
+                    record["cookieCount"] = len(cookies)
+                except Exception:
+                    pass
+                try:
+                    heap = await page.evaluate(
+                        "() => performance.memory"
+                        " ? performance.memory.usedJSHeapSize : null"
+                    )
+                    record["jsHeapBytes"] = heap
+                except Exception:
+                    pass
+
+            records.append(record)
+
+        return records
+
+    async def screenshot_provider(self, name: str) -> bytes:
+        """
+        Capture the current state of one provider's tab.
+
+        Args:
+            name: Provider name.
+
+        Returns:
+            PNG image bytes.
+
+        Raises:
+            WorkerError: If the provider has no open tab.
+        """
+        worker = self._provider(name)
+        page = getattr(worker, "_page", None)
+        if page is None or page.is_closed():
+            raise WorkerError(
+                f"Provider '{name}' has no open tab to capture",
+                code="SESSION_NO_TAB",
+            )
+        return await page.screenshot(type="png", full_page=False)
+
+    async def reload_provider(self, name: str) -> bool:
+        """
+        Reload one provider's tab in place, preserving its URL.
+
+        Args:
+            name: Provider name.
+
+        Returns:
+            True when a reload happened.
+        """
+        worker = self._provider(name)
+        page = getattr(worker, "_page", None)
+        if page is None or page.is_closed():
+            return False
+        await page.reload(wait_until="domcontentloaded")
+        return True
+
+    async def focus_provider(self, name: str) -> None:
+        """
+        Restore the browser and bring one provider's tab to the front.
+
+        Args:
+            name: Provider name.
+        """
+        self.show_browser()
+        worker = self._provider(name)
+        page = getattr(worker, "_page", None)
+        if page is not None and not page.is_closed():
+            try:
+                await page.bring_to_front()
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Profile management

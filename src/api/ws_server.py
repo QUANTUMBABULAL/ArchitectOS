@@ -20,6 +20,7 @@ engine event and may send a small command set.
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from typing import Any, Optional
 
@@ -35,6 +36,9 @@ from src.events import (
     log_event,
 )
 from src.logger import get_logger
+from src.system import MetricsSampler
+
+_METRICS_INTERVAL_SECONDS = 2.5
 
 
 class BusLogHandler(logging.Handler):
@@ -103,6 +107,10 @@ class EngineServer:
         self._logger = get_logger(__name__)
         self._research_lock = asyncio.Lock()
         self._current_task: Optional[asyncio.Task[None]] = None
+        self._metrics_task: Optional[asyncio.Task[None]] = None
+        self._metrics = MetricsSampler()
+        self._research_started_at: Optional[float] = None
+        self._research_durations: list[float] = []
 
     @property
     def app(self) -> ResearchOperatorApp:
@@ -135,15 +143,79 @@ class EngineServer:
                 },
             )
         )
+        self._metrics_task = asyncio.create_task(self._metrics_loop())
 
     async def shutdown(self) -> None:
         """Shut the engine down, notifying attached interfaces first."""
         self._bus.publish(Event(type=EventType.ENGINE_SHUTDOWN))
 
+        if self._metrics_task and not self._metrics_task.done():
+            self._metrics_task.cancel()
+
         if self._current_task and not self._current_task.done():
             self._current_task.cancel()
 
         await self._app.shutdown()
+
+    async def _metrics_loop(self) -> None:
+        """
+        Publish one Metrics event per interval while the engine runs.
+
+        System and engine figures travel in one event so the dashboard
+        renders a consistent snapshot. A failed tick is skipped, never
+        fatal.
+        """
+        while True:
+            await asyncio.sleep(_METRICS_INTERVAL_SECONDS)
+            try:
+                system = await self._metrics.sample()
+                engine = await self._app.runtime_metrics()
+
+                research: dict[str, Any] = {
+                    "running": self._research_lock.locked(),
+                    "elapsedSeconds": None,
+                    "estimatedRemainingSeconds": None,
+                    "averageDurationSeconds": (
+                        round(
+                            sum(self._research_durations)
+                            / len(self._research_durations),
+                            1,
+                        )
+                        if self._research_durations
+                        else None
+                    ),
+                }
+                if (
+                    self._research_lock.locked()
+                    and self._research_started_at is not None
+                ):
+                    elapsed = (
+                        asyncio.get_running_loop().time()
+                        - self._research_started_at
+                    )
+                    research["elapsedSeconds"] = round(elapsed, 1)
+                    if self._research_durations:
+                        average = sum(self._research_durations) / len(
+                            self._research_durations
+                        )
+                        research["estimatedRemainingSeconds"] = round(
+                            max(average - elapsed, 0.0), 1
+                        )
+
+                self._bus.publish(
+                    Event(
+                        type=EventType.METRICS,
+                        payload={
+                            "system": system,
+                            "engine": engine,
+                            "research": research,
+                        },
+                    )
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._logger.debug("Metrics tick failed: %s", exc)
 
     async def snapshot(self) -> dict[str, Any]:
         """
@@ -171,6 +243,7 @@ class EngineServer:
             "disabled": self._app.session.disabled_providers(),
             "paused": self._app.session.paused_providers,
             "sessionOpen": self._app.session.is_open,
+            "browserHidden": self._app.session.browser_hidden,
         }
 
     async def handle_command(
@@ -193,7 +266,60 @@ class EngineServer:
             query = str(message.get("query", "")).strip()
             if not query:
                 return {"type": "Error", "message": "Query cannot be empty"}
-            return await self._start_research(query)
+            return await self._start_research(
+                query,
+                new_conversation=bool(message.get("newChat", False)),
+            )
+
+        if command == "newChat":
+            reset = await self._app.session.reset_conversations()
+            return {"type": "ConversationsReset", "providers": reset}
+
+        if command == "showBrowser":
+            count = self._app.session.show_browser()
+            return {"type": "BrowserVisibility", "hidden": False,
+                    "windows": count}
+
+        if command == "hideBrowser":
+            count = self._app.session.hide_browser()
+            return {"type": "BrowserVisibility", "hidden": count > 0,
+                    "windows": count}
+
+        if command == "diagnostics":
+            records = await self._app.session.provider_diagnostics()
+            return {"type": "Diagnostics", "providers": records}
+
+        if command == "screenshot":
+            provider = str(message.get("provider", "")).strip()
+            try:
+                image = await self._app.session.screenshot_provider(provider)
+            except Exception as exc:
+                return {"type": "Error", "message": str(exc)}
+            return {
+                "type": "Screenshot",
+                "provider": provider,
+                "image": base64.b64encode(image).decode("ascii"),
+            }
+
+        if command == "reloadProvider":
+            provider = str(message.get("provider", "")).strip()
+            try:
+                reloaded = await self._app.session.reload_provider(provider)
+            except Exception as exc:
+                return {"type": "Error", "message": str(exc)}
+            return {
+                "type": "ProviderReloaded",
+                "provider": provider,
+                "reloaded": reloaded,
+            }
+
+        if command == "focusProvider":
+            provider = str(message.get("provider", "")).strip()
+            try:
+                await self._app.session.focus_provider(provider)
+            except Exception as exc:
+                return {"type": "Error", "message": str(exc)}
+            return {"type": "BrowserVisibility", "hidden": False}
 
         if command == "openSession":
             ready = await self._app.open_session()
@@ -219,12 +345,18 @@ class EngineServer:
 
         return {"type": "Error", "message": f"Unknown command: {command!r}"}
 
-    async def _start_research(self, query: str) -> dict[str, Any]:
+    async def _start_research(
+        self,
+        query: str,
+        new_conversation: bool = False,
+    ) -> dict[str, Any]:
         """
         Start a research run if one is not already in progress.
 
         Args:
             query: Research query.
+            new_conversation: Whether providers should start fresh
+                threads for this run (the explicit New Chat case).
 
         Returns:
             Acknowledgement describing whether the run was accepted.
@@ -238,28 +370,53 @@ class EngineServer:
                 ),
             }
 
-        self._current_task = asyncio.create_task(self._run_research(query))
+        self._current_task = asyncio.create_task(
+            self._run_research(query, new_conversation)
+        )
         return {"type": "ResearchAccepted", "query": query}
 
-    async def _run_research(self, query: str) -> None:
+    async def _run_research(
+        self,
+        query: str,
+        new_conversation: bool = False,
+    ) -> None:
         """
         Execute one research run, publishing its outcome.
 
         Args:
             query: Research query.
+            new_conversation: Whether providers start fresh threads.
         """
         async with self._research_lock:
+            self._research_started_at = asyncio.get_running_loop().time()
             try:
-                result = await self._app.research_now(query)
+                result = await self._app.research_now(
+                    query,
+                    new_conversation=new_conversation or None,
+                )
+                payload: dict[str, Any] = {
+                    "content": result.answer,
+                    "route": result.route.target.value,
+                }
+                # The concise final answer travels with its evidence so
+                # the UI can show one recommendation and tuck the raw
+                # provider responses behind an expandable section.
+                if result.final is not None:
+                    payload["final"] = result.final.to_payload()
+                if result.research is not None:
+                    payload["research"] = result.research.to_payload()
                 self._bus.publish(
                     Event(
                         type=EventType.ASSISTANT_MESSAGE,
-                        payload={
-                            "content": result.answer,
-                            "route": result.route.target.value,
-                        },
+                        payload=payload,
                     )
                 )
+                elapsed = (
+                    asyncio.get_running_loop().time()
+                    - self._research_started_at
+                )
+                self._research_durations.append(elapsed)
+                del self._research_durations[:-10]
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -270,6 +427,8 @@ class EngineServer:
                         payload={"error": str(exc)},
                     )
                 )
+            finally:
+                self._research_started_at = None
 
 
 def create_app(server: Optional[EngineServer] = None) -> FastAPI:

@@ -390,6 +390,54 @@ class Settings(BaseModel):
         ),
     )
 
+    auto_hide_browser: bool = Field(
+        default=True,
+        description=(
+            "Hide the automation Chrome windows once every provider is "
+            "signed in, keeping Mission Control the only visible surface. "
+            "The windows are restored automatically whenever a provider "
+            "needs a manual sign-in or verification, and on demand via "
+            "Show Browser"
+        ),
+    )
+
+    research_fresh_conversation: bool = Field(
+        default=False,
+        description=(
+            "Start a brand-new provider conversation for every research "
+            "run. Off by default: existing threads are continued, and new "
+            "chats happen only on explicit request, context overflow, or "
+            "when a provider forces one"
+        ),
+    )
+
+    research_mode: str = Field(
+        default="operator",
+        description=(
+            "How research requests are executed. 'operator' plans the "
+            "request into subtasks and distributes them across providers "
+            "(the research engine); 'debate' asks every provider the same "
+            "question over multiple rounds (the previous behaviour)"
+        ),
+    )
+
+    research_planning: bool = Field(
+        default=True,
+        description=(
+            "Use the local model to decompose requests into subtasks. "
+            "When off, a deterministic template plan is used instead"
+        ),
+    )
+
+    final_answer_synthesis: bool = Field(
+        default=True,
+        description=(
+            "Use the local Ollama model to write the single concise final "
+            "answer. When off (or when the model fails), a deterministic "
+            "summary is built from the consensus data instead"
+        ),
+    )
+
     # ========================================================================
     # DEBATE SETTINGS
     # ========================================================================
@@ -474,6 +522,29 @@ class Settings(BaseModel):
                 f"Must be one of: {valid_levels}"
             )
         return v.upper()
+
+    @field_validator("research_mode")
+    @classmethod
+    def validate_research_mode(cls, v: str) -> str:
+        """
+        Validate the research execution mode.
+
+        Args:
+            v: Raw mode string.
+
+        Returns:
+            Normalized mode.
+
+        Raises:
+            ValueError: If the mode is not recognized.
+        """
+        mode = v.lower().strip()
+        valid_modes = {"operator", "debate"}
+        if mode not in valid_modes:
+            raise ValueError(
+                f"Invalid research mode '{v}'. Must be one of: {valid_modes}"
+            )
+        return mode
 
     @field_validator("browser_mode")
     @classmethod
@@ -608,9 +679,45 @@ class Settings(BaseModel):
 # SINGLETON INSTANCE
 # ============================================================================
 
+_SETTINGS: Optional[Settings] = None
+
+
+def _values_from_environment() -> dict[str, str]:
+    """
+    Collect field values from the process environment.
+
+    Loads the project ``.env`` first (without overriding variables the
+    user exported explicitly), then maps every UPPER_CASE variable whose
+    name matches a Settings field. Pydantic performs the type coercion,
+    so ``"true"`` becomes a bool and ``"9222"`` an int.
+
+    Returns:
+        Field values found in the environment.
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:
+        # A missing dotenv package degrades to exported variables only.
+        pass
+
+    values: dict[str, str] = {}
+    for name in Settings.model_fields:
+        raw = os.environ.get(name.upper())
+        if raw is not None and raw.strip() != "":
+            values[name] = raw
+    return values
+
+
 def get_settings() -> Settings:
     """
     Get or create the global settings instance.
+
+    The first call loads ``.env`` and environment variables; later calls
+    return the same instance. Previously this returned a fresh
+    default-valued Settings on every call and never read the
+    environment at all, so nothing in ``.env`` had any effect.
 
     Returns:
         Settings instance with configuration loaded from environment.
@@ -620,7 +727,10 @@ def get_settings() -> Settings:
         >>> settings = get_settings()
         >>> print(settings.api_port)
     """
-    return Settings()
+    global _SETTINGS
+    if _SETTINGS is None:
+        _SETTINGS = Settings(**_values_from_environment())
+    return _SETTINGS
 
 
 __all__ = [

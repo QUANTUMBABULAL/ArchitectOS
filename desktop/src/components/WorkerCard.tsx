@@ -6,6 +6,7 @@
  * interacts with.
  */
 
+import { useEffect, useState } from "react";
 import type { Worker } from "../lib/types";
 import ProgressBar from "./ProgressBar";
 
@@ -13,6 +14,24 @@ interface Props {
   worker: Worker;
   onSelect?: (name: string) => void;
   selected?: boolean;
+}
+
+const ACTIVE_PHASES = new Set(["Thinking", "Waiting", "Generating"]);
+
+/** Live elapsed seconds while a worker is active; frozen when done. */
+function useElapsed(worker: Worker): number {
+  const active = ACTIVE_PHASES.has(worker.phase);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 500);
+    return () => window.clearInterval(timer);
+  }, [active]);
+
+  if (!active) return worker.elapsedSeconds;
+  if (!worker.startedAt) return 0;
+  return (now - worker.startedAt) / 1000;
 }
 
 const PHASE_TONE: Record<string, "accent" | "ok" | "warn" | "bad"> = {
@@ -37,6 +56,8 @@ const DOT: Record<string, string> = {
 
 export default function WorkerCard({ worker, onSelect, selected }: Props) {
   const tone = PHASE_TONE[worker.phase] ?? "accent";
+  const elapsed = useElapsed(worker);
+  const active = ACTIVE_PHASES.has(worker.phase);
 
   return (
     <button
@@ -54,13 +75,22 @@ export default function WorkerCard({ worker, onSelect, selected }: Props) {
             </h3>
           </div>
           <p className="mt-1 text-[11px] text-slate-500 truncate">
-            {worker.status}
+            {worker.stage ?? worker.status}
           </p>
+          {worker.stageAt && active && (
+            <p className="mt-0.5 text-[10px] font-mono text-slate-600">
+              since {new Date(worker.stageAt).toLocaleTimeString()}
+            </p>
+          )}
         </div>
 
-        {worker.elapsedSeconds > 0 && (
-          <span className="text-[10px] font-mono text-slate-500 shrink-0 tabular-nums">
-            {worker.elapsedSeconds.toFixed(1)}s
+        {elapsed > 0 && (
+          <span
+            className={`text-[10px] font-mono shrink-0 tabular-nums ${
+              active ? "text-accent-soft" : "text-slate-500"
+            }`}
+          >
+            {elapsed.toFixed(1)}s
           </span>
         )}
       </div>

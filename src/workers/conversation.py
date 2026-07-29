@@ -29,6 +29,9 @@ class ConversationState:
         provider: Provider name.
         conversation_id: Provider-assigned conversation identifier when it
             can be recovered from the page URL, otherwise None.
+        conversation_url: Full page URL of the ongoing thread, recorded so
+            recovery and restarts can RESUME the conversation instead of
+            opening a fresh one at the provider's base URL.
         turns: Number of completed prompt/response exchanges.
         started_at: When the conversation began.
         last_prompt_at: When the most recent prompt was submitted.
@@ -42,6 +45,7 @@ class ConversationState:
 
     provider: str
     conversation_id: Optional[str] = None
+    conversation_url: Optional[str] = None
     turns: int = 0
     started_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
@@ -79,6 +83,7 @@ class ConversationState:
     def reset(self) -> None:
         """Clear conversation history, keeping cumulative reset count."""
         self.conversation_id = None
+        self.conversation_url = None
         self.turns = 0
         self.started_at = datetime.now(timezone.utc)
         self.last_prompt_at = None

@@ -38,9 +38,20 @@ from src.exceptions import (
 )
 from src.logger import get_logger
 from src.memory import MemoryStore
-from src.debate import DebateEngine, DebateOutcome, render_report
+from src.debate import (
+    DebateEngine,
+    DebateOutcome,
+    FinalAnswer,
+    build_final_answer,
+)
 from src.orchestrator import ResearchOrchestrator, ResearchOutcome
 from src.planner import Planner
+from src.research import (
+    ExecutiveReportBuilder,
+    ResearchOperator,
+    ResearchPlanner,
+    ResearchResult,
+)
 from src.session import BrowserSessionManager
 from src.routing import (
     FastRouter,
@@ -68,6 +79,8 @@ class RequestResult:
     route: RoutingDecision
     outcome: Optional[ResearchOutcome] = None
     debate: Optional[DebateOutcome] = None
+    final: Optional[FinalAnswer] = None
+    research: Optional[ResearchResult] = None
 
     @property
     def used_research(self) -> bool:
@@ -169,6 +182,23 @@ class ResearchOperatorApp:
             consensus=self._consensus,
             settings=self._settings,
         )
+        # The research operator is the default path: it plans a request
+        # into subtasks and distributes them, rather than broadcasting one
+        # question to everybody. The debate engine remains available
+        # behind RESEARCH_MODE=debate.
+        self._operator = ResearchOperator(
+            session=self._session,
+            consensus=self._consensus,
+            planner=ResearchPlanner(
+                ollama=self._ollama, settings=self._settings
+            ),
+            report_builder=ExecutiveReportBuilder(
+                synthesize=self._write_summary
+                if self._settings.final_answer_synthesis
+                else None
+            ),
+            settings=self._settings,
+        )
         self._orchestrator = ResearchOrchestrator(
             planner=self._planner,
             decision_engine=self._engine,
@@ -189,22 +219,6 @@ class ResearchOperatorApp:
             Research orchestrator instance.
         """
         return self._orchestrator
-
-    @property
-    def session(self) -> BrowserSessionManager:
-        """
-        Return the persistent browser session manager.
-
-        The session manager is the public surface for provider state:
-        enabled/disabled/paused providers, authentication status, recovery,
-        and conversation resets. Interfaces such as the WebSocket bridge
-        read provider state through this property rather than reaching into
-        private attributes.
-
-        Returns:
-            Browser session manager instance.
-        """
-        return self._session
 
     @property
     def is_initialized(self) -> bool:
@@ -270,7 +284,11 @@ class ResearchOperatorApp:
             await self.open_session()
         self._logger.info("AI Research Operator runtime initialized")
 
-    async def research_now(self, query: str) -> RequestResult:
+    async def research_now(
+        self,
+        query: str,
+        new_conversation: Optional[bool] = None,
+    ) -> RequestResult:
         """
         Run the explicit-research fast path.
 
@@ -285,6 +303,9 @@ class ResearchOperatorApp:
 
         Args:
             query: Research query, sent verbatim to every provider.
+            new_conversation: Force providers to start fresh threads for
+                this run. Defaults to the configured policy (continue
+                existing conversations).
 
         Returns:
             Result carrying the unified answer.
@@ -335,15 +356,42 @@ class ResearchOperatorApp:
                 outcome=outcome,
             )
 
+        if self._settings.research_mode == "operator":
+            print(
+                f"[*] Planning the request and distributing subtasks "
+                f"across {len(ready)} provider(s)..."
+            )
+            result = await self._operator.run(cleaned)
+            return RequestResult(
+                answer=self._render_executive(result),
+                route=decision,
+                research=result,
+            )
+
         print(
             f"[*] Debating across {len(ready)} provider(s), up to "
             f"{self._settings.debate_max_rounds} round(s)..."
         )
-        debate = await self._debate.run(cleaned)
+        debate = await self._debate.run(
+            cleaned, fresh_conversation=new_conversation
+        )
+
+        # The user reads ONE concise answer, not five transcripts. The
+        # full report and raw responses remain attached for the
+        # expandable section and the terminal user who wants them.
+        final = await build_final_answer(
+            debate,
+            synthesize=(
+                self._engine.answer_locally
+                if self._settings.final_answer_synthesis
+                else None
+            ),
+        )
         return RequestResult(
-            answer=render_report(debate),
+            answer=final.summary,
             route=decision,
             debate=debate,
+            final=final,
         )
 
     async def open_session(self) -> list[str]:
@@ -620,6 +668,120 @@ class ResearchOperatorApp:
         except ValidationError as exc:
             return f"Could not evaluate that expression: {exc}"
         return f"{expression.strip()} = {format_result(value)}"
+
+    async def _write_summary(self, system: str, prompt: str) -> str:
+        """
+        Write prose with the local model on behalf of a report builder.
+
+        Args:
+            system: System prompt describing the writing task.
+            prompt: The structured material to write from.
+
+        Returns:
+            Generated prose.
+
+        Raises:
+            BrainError: If generation fails.
+        """
+        return await self._ollama.generate(
+            prompt=prompt,
+            system=system,
+            num_predict=1400,
+            operation="executive_summary",
+        )
+
+    @staticmethod
+    def _render_executive(result: ResearchResult) -> str:
+        """
+        Render an executive report for terminal and chat display.
+
+        The structured payload travels separately over the event stream;
+        this is the plain-text rendering, which stays short by design.
+
+        Args:
+            result: Completed research result.
+
+        Returns:
+            Report text.
+        """
+        report = result.report
+        lines = [
+            f"{report.headline_label}: {report.headline}",
+            f"Confidence: {report.confidence:.0%}",
+            "",
+            report.summary,
+        ]
+
+        if report.evidence_points:
+            lines.extend(["", "Evidence:"])
+            lines.extend(f"  • {point}" for point in report.evidence_points)
+
+        if report.weaknesses:
+            lines.extend(["", "Potential weakness:"])
+            lines.extend(f"  • {item}" for item in report.weaknesses)
+
+        if report.alternatives:
+            lines.extend(["", "Alternatives:"])
+            lines.extend(
+                f"  • {alt.priority}: {alt.choice}"
+                for alt in report.alternatives
+            )
+
+        if report.sources:
+            lines.extend(["", "Sources:"])
+            lines.extend(
+                f"  • {source['url']}" for source in report.sources[:8]
+            )
+
+        return "\n".join(lines)
+
+    async def runtime_metrics(self) -> dict[str, object]:
+        """
+        Assemble engine-side metrics for the Mission Control dashboard.
+
+        Every probe is local and cheap (Ollama health is one HTTP call to
+        localhost). Failures degrade to null fields rather than raising,
+        because a metrics tick must never disturb research.
+
+        Returns:
+            JSON-compatible engine metrics.
+        """
+        ollama_ok: Optional[bool] = None
+        try:
+            ollama_ok = await self._ollama.health_check()
+        except Exception:
+            ollama_ok = False
+
+        browser: dict[str, object] = {"state": "not_started"}
+        try:
+            health = await self._browser.health_check()
+            if health.session_id is not None:
+                browser = {
+                    "state": health.state.value,
+                    "healthy": health.healthy,
+                    "pages": health.page_count,
+                }
+        except Exception:
+            browser = {"state": "unknown"}
+
+        stats = self._session.stats
+        return {
+            "ollamaHealthy": ollama_ok,
+            "ollamaModel": self._ollama.model,
+            "browser": browser,
+            "browserHidden": self._session.browser_hidden,
+            "workerCount": len(self._session.ready_providers()),
+            "registeredWorkers": len(self._workers.worker_names),
+            "sessionOpen": self._session.is_open,
+            "paused": self._session.paused_providers,
+            "responseTimes": self._session.response_times,
+            "stats": {
+                "promptsDispatched": stats.prompts_dispatched,
+                "responsesReceived": stats.responses_received,
+                "providerFailures": stats.provider_failures,
+                "recoveries": stats.recoveries,
+            },
+        }
 
     async def status(self) -> str:
         """

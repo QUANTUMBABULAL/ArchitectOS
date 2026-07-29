@@ -8,11 +8,13 @@
 
 import { useState } from "react";
 import Sidebar, { type PageId } from "./components/Sidebar";
+import BrowserPage from "./pages/BrowserPage";
 import ChatPage from "./pages/ChatPage";
-import WorkersPage from "./pages/WorkersPage";
 import ConsensusPage from "./pages/ConsensusPage";
+import DashboardPage from "./pages/DashboardPage";
 import SettingsPage from "./pages/SettingsPage";
 import TimelinePage from "./pages/TimelinePage";
+import WorkersPage from "./pages/WorkersPage";
 import { useEngine } from "./lib/useEngine";
 
 export default function App() {
@@ -32,15 +34,29 @@ export default function App() {
         workerCount={workers.length}
         activeCount={activeCount}
         researching={state.researching}
+        browserHidden={state.browserHidden}
+        onNewChat={() => {
+          send({ command: "newChat" });
+          setPage("chat");
+        }}
+        onToggleBrowser={() =>
+          send({
+            command: state.browserHidden ? "showBrowser" : "hideBrowser",
+          })
+        }
       />
 
       <main className="flex-1 min-w-0 flex flex-col">
         {page === "chat" && (
           <ChatPage state={state} workers={workers} onSubmit={submit} />
         )}
+        {page === "dashboard" && (
+          <DashboardPage state={state} workers={workers} send={send} />
+        )}
         {page === "workers" && (
           <WorkersPage state={state} workers={workers} send={send} />
         )}
+        {page === "browser" && <BrowserPage state={state} send={send} />}
         {page === "sessions" && <TimelinePage state={state} />}
         {page === "consensus" && <ConsensusPage state={state} />}
         {page === "settings" && (

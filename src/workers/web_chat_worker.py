@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from playwright.async_api import Page
 
@@ -38,6 +39,7 @@ from src.browser.page_state import (
 )
 from src.browser.stabilizer import PageStabilizer
 from src.config import get_settings
+from src.events import EventType, WorkerPhase, get_emitter
 from src.exceptions import (
     ProviderAuthError,
     ProviderChallengeError,
@@ -61,6 +63,25 @@ from .base_worker import (
 )
 from .chat_site import ChatSiteConfig
 from .conversation import ConversationState
+
+
+_GENERIC_PATH_SEGMENTS: frozenset[str] = frozenset(
+    {"new", "app", "chat", "chats", "c", "s", ""}
+)
+
+
+def _normalize_host(netloc: str) -> str:
+    """
+    Return a comparable host from a URL netloc.
+
+    Args:
+        netloc: Network location from a parsed URL.
+
+    Returns:
+        Lower-cased host without a leading ``www.``.
+    """
+    host = (netloc or "").lower()
+    return host[4:] if host.startswith("www.") else host
 
 
 class WebChatWorker(BaseWorker):
@@ -118,6 +139,7 @@ class WebChatWorker(BaseWorker):
         self._diagnostics_dir = (
             Path(get_settings().data_dir) / "diagnostics"
         )
+        self._events = get_emitter()
         self._stabilizer = PageStabilizer(
             input_selectors=site.prompt_input_selectors(),
             login_selectors=site.login_wall_selector,
@@ -432,7 +454,7 @@ class WebChatWorker(BaseWorker):
         """
         page = await self._require_page()
 
-        if new_conversation:
+        if new_conversation and not self._conversation.is_fresh:
             await self._open_new_conversation(page)
             self._conversation.reset()
 
@@ -523,7 +545,10 @@ class WebChatWorker(BaseWorker):
                 exc,
             )
 
-        self._conversation.reset()
+        # The conversation record deliberately survives the restart:
+        # _prepare() navigates back to the recorded conversation URL, so a
+        # recovered tab continues the same thread. Only when that URL
+        # proves unusable does _prepare() reset and start fresh.
         self._state = WorkerState.CREATED
         await self.start()
         self._logger.info("Provider recovered: %s", self._site.display_name)
@@ -547,29 +572,79 @@ class WebChatWorker(BaseWorker):
             "Conversation reset for %s", self._site.display_name
         )
 
+    def _resume_url(self) -> str:
+        """
+        Return the URL that continues the ongoing conversation.
+
+        Falls back to the base URL when no thread exists yet. This is the
+        single decision point that makes recovery RESUME a conversation
+        instead of silently starting a new one.
+
+        Returns:
+            Conversation URL when known, otherwise the base URL.
+        """
+        return self._conversation.conversation_url or self._site.base_url
+
     async def _prepare(self) -> None:
         """
-        Open the provider tab and verify the composer is usable.
+        Open (or re-adopt) the provider tab and verify it is usable.
+
+        An existing tab on the provider's host — restored by Chrome, left
+        over from a previous run, or surviving a worker restart — is
+        reused instead of opening a duplicate. Navigation only happens
+        when the tab is missing or on the wrong site, so a healthy
+        conversation is never reloaded away.
+
+        When a recorded conversation URL can no longer be made usable
+        (the provider deleted the thread), the worker falls back to the
+        base URL once and starts fresh — the "provider forces a reset"
+        case.
 
         Raises:
             WorkerError: If navigation fails or a login wall is detected.
         """
-        self._logger.info(
-            "Opening %s tab at %s",
-            self._site.display_name,
-            self._site.base_url,
-        )
-        self._page = await self._tabs.open_tab(
-            url=self._site.base_url,
-            reuse_existing=False,
+        # One acquisition path for every caller: reuse this provider's
+        # open tab, else adopt the startup blank page, else create one.
+        # No branch here opens a second tab for a provider that has one,
+        # and none re-navigates a tab that is already on the provider.
+        self._page = await self._tabs.acquire_page(
+            url=self._resume_url(),
             wait_until="domcontentloaded",
             timeout_seconds=self._site.navigation_timeout_seconds,
         )
+
         # Attached before stabilization so console output from the
         # problematic load is captured, not just what follows a failure.
         self._console.attach(self._page)
-        await self._require_composer(self._page)
+        self._capture_conversation_id(self._page)
+
+        try:
+            await self._require_composer(self._page)
+        except WorkerError:
+            if self._conversation.conversation_url is None:
+                raise
+            # The recorded thread is gone or broken: the provider forced
+            # a reset. Fall back to a fresh conversation exactly once.
+            self._logger.warning(
+                "%s conversation at %s is no longer usable; starting a "
+                "fresh thread",
+                self._site.display_name,
+                self._conversation.conversation_url,
+            )
+            self._conversation.reset()
+            await self._open_new_conversation(self._page)
+            await self._require_composer(self._page)
+
         self._logger.info("%s tab ready", self._site.display_name)
+
+    def _find_own_tab(self) -> Optional[Page]:
+        """
+        Find an already-open tab on this provider's host.
+
+        Returns:
+            Open page on the provider's host, or None.
+        """
+        return self._tabs.find_tab_by_host(self._site.base_url)
 
     async def _execute(self, query: WorkerQuery) -> str:
         """
@@ -586,7 +661,11 @@ class WebChatWorker(BaseWorker):
         """
         page = await self._require_page()
 
-        if query.new_conversation:
+        # Navigation is a last resort, not a ritual: a new conversation is
+        # only opened when there is an existing thread to leave behind. A
+        # fresh worker whose tab is already usable submits straight into
+        # the conversation the provider is showing.
+        if query.new_conversation and not self._conversation.is_fresh:
             await self._open_new_conversation(page)
             self._conversation.reset()
 
@@ -607,9 +686,31 @@ class WebChatWorker(BaseWorker):
             self._conversation.turns + 1,
             not query.new_conversation,
         )
+        self._emit_phase(
+            EventType.PROVIDER_TYPING,
+            WorkerPhase.THINKING,
+            "Typing prompt…",
+        )
         await self._submit_prompt(page, prompt)
+        self._emit_phase(
+            EventType.PROVIDER_WAITING,
+            WorkerPhase.THINKING,
+            "Waiting for response…",
+        )
+
+        # Providers move the tab onto a thread URL as soon as the first
+        # prompt is accepted. Capturing it HERE, before the answer is
+        # awaited, is what lets a response timeout be recovered into the
+        # same conversation instead of a brand-new one.
+        await asyncio.sleep(0)
+        self._capture_conversation_id(page)
 
         await self._wait_for_response(page, baseline)
+        self._emit_phase(
+            EventType.PROVIDER_STREAMING,
+            WorkerPhase.GENERATING,
+            "Extracting answer…",
+        )
         answer = await self._extract_answer(page)
 
         self._conversation.record_turn(prompt, answer)
@@ -621,6 +722,35 @@ class WebChatWorker(BaseWorker):
             self._conversation.describe(),
         )
         return answer
+
+    def _emit_phase(
+        self,
+        type_: EventType,
+        phase: WorkerPhase,
+        stage: str,
+    ) -> None:
+        """
+        Publish a live stage update for this provider's worker card.
+
+        Never raises: progress reporting must not break research.
+
+        Args:
+            type_: Provider event type.
+            phase: Coarse phase for the card.
+            stage: Human-readable stage label with timestamps handled by
+                the event envelope.
+        """
+        try:
+            self._events.provider(
+                type_,
+                self._site.name,
+                phase=phase,
+                displayName=self._site.display_name,
+                stage=stage,
+                turn=self._conversation.turns + 1,
+            )
+        except Exception:
+            pass
 
     def _capture_conversation_id(self, page: Page) -> None:
         """
@@ -638,12 +768,54 @@ class WebChatWorker(BaseWorker):
         except Exception:
             return
 
-        if not url:
+        if not url or not self._is_conversation_url(url):
             return
 
-        segment = url.rstrip("/").rsplit("/", 1)[-1]
-        if segment and segment not in {"new", "app", "chat"}:
+        segment = url.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+        if segment and segment not in _GENERIC_PATH_SEGMENTS:
             self._conversation.conversation_id = segment
+
+        # The full URL is what recovery navigates back to. Without it
+        # every restart landed on the base URL, which providers treat as
+        # "start a new chat" — the observed Grok/DeepSeek resets.
+        self._conversation.conversation_url = url
+
+    def _is_conversation_url(self, url: str) -> bool:
+        """
+        Report whether a URL identifies a live conversation thread.
+
+        A URL qualifies when it is on the provider's own host and has a
+        deeper path than the base URL. Both conditions matter: the host
+        check rejects sign-in redirects to a third-party domain, and the
+        depth check rejects the base URL itself, which every provider
+        treats as "start a new chat".
+
+        Args:
+            url: Candidate URL.
+
+        Returns:
+            True when the URL can be navigated back to in order to resume.
+        """
+        try:
+            current = urlparse(url)
+            base = urlparse(self._site.base_url)
+        except ValueError:
+            return False
+
+        if _normalize_host(current.netloc) != _normalize_host(base.netloc):
+            return False
+
+        current_path = current.path.strip("/")
+        base_path = base.path.strip("/")
+        if not current_path or current_path == base_path:
+            return False
+
+        # A URL that is only the sign-in or challenge flow is not a thread.
+        lowered = url.lower()
+        return not any(
+            marker in lowered
+            for marker in ("/login", "/signin", "/sign-in", "/cdn-cgi/")
+        )
 
     async def _recover(self) -> None:
         """
@@ -651,6 +823,11 @@ class WebChatWorker(BaseWorker):
 
         Reloads the provider tab; if the tab is gone, opens a new one.
         """
+        # Record where the tab currently is before touching it: a failed
+        # attempt often still left the page on a valid thread URL.
+        if self._page is not None and not self._page.is_closed():
+            self._capture_conversation_id(self._page)
+
         try:
             if self._page is not None and not self._page.is_closed():
                 await self._page.reload(
@@ -663,9 +840,10 @@ class WebChatWorker(BaseWorker):
                 "%s tab reload failed: %s", self._site.display_name, exc
             )
 
-        self._page = await self._tabs.open_tab(
-            url=self._site.base_url,
-            reuse_existing=False,
+        # The tab is gone: reopen at the conversation URL so the thread
+        # survives the recovery instead of restarting from scratch.
+        self._page = await self._tabs.acquire_page(
+            url=self._resume_url(),
             wait_until="domcontentloaded",
             timeout_seconds=self._site.navigation_timeout_seconds,
         )
@@ -707,12 +885,12 @@ class WebChatWorker(BaseWorker):
             WorkerError: If a page cannot be obtained.
         """
         if self._page is None or self._page.is_closed():
-            self._page = await self._tabs.open_tab(
-                url=self._site.base_url,
-                reuse_existing=False,
+            self._page = await self._tabs.acquire_page(
+                url=self._resume_url(),
                 wait_until="domcontentloaded",
                 timeout_seconds=self._site.navigation_timeout_seconds,
             )
+            self._capture_conversation_id(self._page)
         return self._page
 
     async def _open_new_conversation(self, page: Page) -> None:
@@ -937,7 +1115,10 @@ class WebChatWorker(BaseWorker):
         if self._site.submit_delay_seconds:
             await asyncio.sleep(self._site.submit_delay_seconds)
 
-        if await self._click_send(page):
+        # Sites whose button selectors can mis-target other controls
+        # (DeepSeek's sidebar "New chat" was the canonical failure) submit
+        # via Enter only; the button is never clicked.
+        if not self._site.submit_via_enter and await self._click_send(page):
             return
 
         await self._keyboard.press_key(

@@ -112,6 +112,10 @@ GROK_SITE = ChatSiteConfig(
     display_name="Grok",
     base_url="https://grok.com/",
     composer_selector="textarea",
+    # grok.com renders several submit-type buttons; clicking the first
+    # match is not guaranteed to be the composer's send control. Enter in
+    # the textarea is the documented submit gesture and cannot mis-target.
+    submit_via_enter=True,
     send_button_selector='button[type="submit"]',
     stop_button_selector='button[aria-label*="Stop"]',
     assistant_message_selector=".message-bubble, .response-content-markdown",
@@ -130,7 +134,16 @@ DEEPSEEK_SITE = ChatSiteConfig(
         'textarea[placeholder]',
         'div[contenteditable="true"]',
     ),
-    send_button_selector='div[role="button"][aria-disabled="false"]',
+    # DeepSeek's UI is built almost entirely from div[role="button"]
+    # elements, and the sidebar's "New chat" button appears BEFORE the
+    # composer's send control in DOM order. The old selector clicked the
+    # first enabled role=button — i.e. New chat — which is exactly why
+    # DeepSeek opened a fresh conversation on every single prompt. Enter
+    # in the composer submits without touching any button.
+    submit_via_enter=True,
+    send_button_selector=(
+        'div[role="button"][aria-disabled="false"]:near(#chat-input, 120)'
+    ),
     stop_button_selector='div[role="button"]:has(rect)',
     assistant_message_selector="div.ds-markdown, div._4f9bf79",
     login_wall_selector='button:has-text("Log in")',

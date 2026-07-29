@@ -217,7 +217,7 @@ class DebateEngine:
         self,
         question: str,
         max_rounds: Optional[int] = None,
-        fresh_conversation: bool = True,
+        fresh_conversation: Optional[bool] = None,
     ) -> DebateOutcome:
         """
         Debate a question across providers until it converges.
@@ -226,14 +226,20 @@ class DebateEngine:
             question: Research question.
             max_rounds: Round limit. Defaults to the configured maximum.
             fresh_conversation: Whether round one should start new
-                conversations. True avoids contamination from unrelated
-                earlier questions; later rounds always continue.
+                conversations. Defaults to the configured policy, which
+                is to CONTINUE existing threads — a new chat happens only
+                on explicit request, context overflow, or when a provider
+                forces one. Later rounds always continue.
 
         Returns:
             Debate outcome with every round recorded.
         """
         limit = max_rounds or self._settings.debate_max_rounds
         threshold = self._settings.debate_confidence_threshold
+        if fresh_conversation is None:
+            fresh_conversation = getattr(
+                self._settings, "research_fresh_conversation", False
+            )
         rounds: list[DebateRound] = []
 
         self._research_id = uuid4().hex
@@ -303,6 +309,7 @@ class DebateEngine:
                     self._research_id,
                     round=round_number,
                     providers=list(follow_ups),
+                    stage="Verifying claims…",
                 )
             )
             next_round = await self._run_follow_up_round(
@@ -509,9 +516,28 @@ class DebateEngine:
         ]
         if not opinions:
             return None
-        return await self._consensus.evaluate(
+
+        # Stage updates so Mission Control shows what the engine is
+        # actually doing between provider answers and the next round.
+        self._events.emit(
+            research_event(
+                EventType.CONSENSUS_STARTED,
+                self._research_id,
+                stage="Comparing responses…",
+                opinionCount=len(opinions),
+            )
+        )
+        result = await self._consensus.evaluate(
             question=question, opinions=opinions
         )
+        self._events.emit(
+            research_event(
+                EventType.RESEARCH_PROGRESS,
+                self._research_id,
+                stage="Estimating confidence…",
+            )
+        )
+        return result
 
     def _build_follow_ups(
         self,

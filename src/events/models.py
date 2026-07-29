@@ -31,6 +31,7 @@ class EventType(str, Enum):
     ENGINE_READY = "EngineReady"
     ENGINE_SHUTDOWN = "EngineShutdown"
     LOG = "Log"
+    METRICS = "Metrics"
 
     # Provider lifecycle
     PROVIDER_REGISTERED = "ProviderRegistered"
@@ -50,6 +51,12 @@ class EventType(str, Enum):
     RESEARCH_ROUND_STARTED = "ResearchRoundStarted"
     RESEARCH_FINISHED = "ResearchFinished"
     RESEARCH_FAILED = "ResearchFailed"
+
+    # Investigation pipeline
+    RESEARCH_PLANNED = "ResearchPlanned"
+    TASK_ASSIGNED = "TaskAssigned"
+    TASK_FINISHED = "TaskFinished"
+    EVIDENCE_EXTRACTED = "EvidenceExtracted"
 
     # Consensus
     CONSENSUS_STARTED = "ConsensusStarted"

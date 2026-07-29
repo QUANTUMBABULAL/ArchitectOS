@@ -7,8 +7,128 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import type { EngineState, Worker } from "../lib/types";
+import type { EngineState, FinalAnswer, Worker } from "../lib/types";
+import ExecutiveReportCard from "../components/ExecutiveReportCard";
 import ProgressBar from "../components/ProgressBar";
+
+/**
+ * The single concise research result: recommendation, confidence,
+ * supporters, key disagreement, sources — with the five raw provider
+ * responses tucked behind an expandable section.
+ */
+function FinalAnswerCard({ final }: { final: FinalAnswer }) {
+  const [showRaw, setShowRaw] = useState(false);
+  const confidence = Math.round(final.confidence * 100);
+  const rawEntries = Object.entries(final.rawAnswers);
+
+  return (
+    <div className="card p-5 mt-3">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span
+          className={`text-[11px] font-semibold px-2 py-0.5 rounded-md ${
+            final.converged
+              ? "bg-ok/15 text-ok"
+              : "bg-warn/15 text-warn"
+          }`}
+        >
+          {final.converged ? "Consensus" : "No full consensus"}
+        </span>
+        <span className="text-[11px] font-mono text-slate-400 tabular-nums">
+          confidence {confidence}%
+        </span>
+        <span className="text-[11px] text-slate-500">
+          {final.rounds} round{final.rounds === 1 ? "" : "s"}
+        </span>
+      </div>
+
+      {final.supporting.length > 0 && (
+        <p className="mt-2.5 text-[11px] text-slate-500">
+          Supported by{" "}
+          <span className="text-slate-300">
+            {final.supporting.join(", ")}
+          </span>
+          {final.opposing.length > 0 && (
+            <>
+              {" · disagreeing: "}
+              <span className="text-warn/90">
+                {final.opposing.join(", ")}
+              </span>
+            </>
+          )}
+        </p>
+      )}
+
+      {final.disagreements.length > 0 && (
+        <p className="mt-2 text-[11px] leading-snug text-slate-500">
+          <span className="text-slate-400 font-medium">
+            Key disagreement:
+          </span>{" "}
+          {final.disagreements[0]}
+        </p>
+      )}
+
+      {final.sources.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {final.sources.slice(0, 8).map((source) => (
+            <a
+              key={source.url}
+              href={source.url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[10px] px-2 py-1 rounded-md bg-white/[.05]
+                         border border-white/[.07] text-slate-400
+                         hover:text-accent-soft hover:border-accent/30
+                         transition-colors truncate max-w-[220px]"
+              title={source.url}
+            >
+              {source.title}
+            </a>
+          ))}
+        </div>
+      )}
+
+      {rawEntries.length > 0 && (
+        <div className="mt-4 border-t border-white/[.06] pt-3">
+          <button
+            onClick={() => setShowRaw((value) => !value)}
+            className="text-[11px] text-slate-500 hover:text-slate-300
+                       transition-colors flex items-center gap-1.5"
+          >
+            <span
+              className={`inline-block transition-transform ${
+                showRaw ? "rotate-90" : ""
+              }`}
+            >
+              ▸
+            </span>
+            {showRaw ? "Hide" : "Show"} raw provider responses (
+            {rawEntries.length})
+          </button>
+          {showRaw && (
+            <div className="mt-3 space-y-3">
+              {rawEntries.map(([name, answer]) => (
+                <details
+                  key={name}
+                  className="rounded-xl bg-ink-900/60 border border-white/[.05]"
+                >
+                  <summary className="px-3 py-2 text-[12px] font-medium text-slate-300 cursor-pointer select-none">
+                    {name}
+                    <span className="ml-2 text-[10px] text-slate-600 font-mono">
+                      {answer.length.toLocaleString()} chars
+                    </span>
+                  </summary>
+                  <div className="px-3 pb-3 text-[12px] leading-relaxed text-slate-400 whitespace-pre-wrap max-h-80 overflow-y-auto">
+                    {answer}
+                  </div>
+                </details>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 interface Props {
   state: EngineState;
@@ -68,15 +188,25 @@ export default function ChatPage({ state, workers, onSubmit }: Props) {
               <div className="text-[11px] font-medium text-slate-500 mb-1.5">
                 {message.role === "user" ? "You" : "ArchitectOS"}
               </div>
-              <div
-                className={
-                  message.role === "user"
-                    ? "text-[14px] leading-relaxed text-slate-200"
-                    : "text-[14px] leading-relaxed text-slate-300 whitespace-pre-wrap"
-                }
-              >
-                {message.content}
-              </div>
+              {/* An operator result renders as its report card; the
+                  plain text form would duplicate it. */}
+              {!message.research && (
+                <div
+                  className={
+                    message.role === "user"
+                      ? "text-[14px] leading-relaxed text-slate-200"
+                      : "text-[14px] leading-relaxed text-slate-300 whitespace-pre-wrap"
+                  }
+                >
+                  {message.content}
+                </div>
+              )}
+              {message.research && (
+                <ExecutiveReportCard research={message.research} />
+              )}
+              {message.final && !message.research && (
+                <FinalAnswerCard final={message.final} />
+              )}
             </div>
           ))}
 
@@ -87,8 +217,44 @@ export default function ChatPage({ state, workers, onSubmit }: Props) {
               </div>
               <div className="card p-4">
                 <p className="text-[13px] text-slate-300">
-                  Research started. Consulting providers:
+                  {state.stage
+                    ? `${state.stage}${state.stageDetail ? ` — ${state.stageDetail}` : ""}`
+                    : "Research started."}
                 </p>
+
+                {state.plan && (
+                  <div className="mt-3 space-y-1">
+                    {state.plan.tasks.map((task) => (
+                      <div
+                        key={`${task.taskId}-${task.assignedTo}`}
+                        className="flex items-center gap-2 text-[12px]"
+                      >
+                        <span
+                          className={
+                            task.status === "done"
+                              ? "text-ok"
+                              : task.status === "failed"
+                                ? "text-bad"
+                                : "text-slate-600"
+                          }
+                        >
+                          {task.status === "done"
+                            ? "✓"
+                            : task.status === "failed"
+                              ? "×"
+                              : "○"}
+                        </span>
+                        <span className="text-slate-400 flex-1 truncate">
+                          {task.title}
+                        </span>
+                        <span className="text-[10px] text-slate-600 font-mono">
+                          {task.assignedTo ?? "—"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
                 <div className="mt-3 space-y-1.5">
                   {workers.map((worker) => {
                     const done = worker.phase === "Finished";

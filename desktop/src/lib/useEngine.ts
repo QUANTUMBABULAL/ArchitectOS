@@ -18,6 +18,12 @@ import type {
   Command,
   EngineEvent,
   EngineState,
+  FinalAnswer,
+  MetricsSnapshot,
+  PlanTask,
+  ProviderDiagnostics,
+  ResearchPlanView,
+  ResearchResultView,
   TimelineEntry,
   Worker,
   WorkerPhase,
@@ -43,6 +49,15 @@ const initialState: EngineState = {
   round: 0,
   question: "",
   error: null,
+  stage: "",
+  stageDetail: "",
+  plan: null,
+  evidenceCount: 0,
+  metrics: null,
+  browserHidden: false,
+  diagnostics: [],
+  diagnosticsAt: null,
+  screenshots: {},
 };
 
 /** Human-readable status text per phase, shown on worker cards. */
@@ -167,6 +182,10 @@ function reduce(state: EngineState, action: Action): EngineState {
       round: 0,
       consensus: null,
       error: null,
+      stage: "Planning",
+      stageDetail: "Decomposing the request",
+      plan: null,
+      evidenceCount: 0,
       timeline: withTimeline(state, entry("research", "Request submitted", action.content)),
     };
   }
@@ -202,6 +221,7 @@ function reduce(state: EngineState, action: Action): EngineState {
         workers,
         order,
         disabled: (event.disabled ?? []) as string[],
+        browserHidden: Boolean(event.browserHidden ?? state.browserHidden),
       };
     }
 
@@ -239,11 +259,88 @@ function reduce(state: EngineState, action: Action): EngineState {
         ),
       };
 
-    case "ResearchProgress":
-      return {
+    case "ResearchProgress": {
+      const stage = str(event, "stage") || state.stage;
+      const detail = str(event, "detail") || state.stageDetail;
+      const next = {
         ...state,
         progress: num(event, "progress", state.progress),
         round: num(event, "round", state.round),
+        stage,
+        stageDetail: event.detail ? detail : state.stageDetail,
+      };
+      // Only stage entries are worth a timeline row; the completion
+      // ticks that follow each stage would double every entry.
+      if (event.detail && stage !== state.stage) {
+        return { ...next, timeline: withTimeline(next, entry("research", stage, detail)) };
+      }
+      return next;
+    }
+
+    case "ResearchPlanned": {
+      const plan = event.plan as ResearchPlanView | undefined;
+      if (!plan) return state;
+      return {
+        ...state,
+        plan: { ...plan, tasks: plan.tasks.map((task) => ({ ...task, status: "pending" as const })) },
+        stage: "Planning",
+        timeline: withTimeline(
+          state,
+          entry(
+            "research",
+            `Plan: ${plan.tasks.length} subtasks`,
+            plan.objective,
+          ),
+        ),
+      };
+    }
+
+    case "TaskAssigned": {
+      const task = event.task as PlanTask | undefined;
+      if (!task || !state.plan) return state;
+      const tasks = [...state.plan.tasks];
+      const index = tasks.findIndex((item) => item.taskId === task.taskId);
+      const merged: PlanTask = { ...task, status: "pending" };
+      if (index >= 0) tasks[index] = merged;
+      else tasks.push(merged);
+      return { ...state, plan: { ...state.plan, tasks } };
+    }
+
+    case "TaskFinished": {
+      if (!state.plan) return state;
+      const taskId = num(event, "taskId", -1);
+      const success = Boolean(event.success);
+      const tasks = state.plan.tasks.map((task) =>
+        task.taskId === taskId
+          ? { ...task, status: (success ? "done" : "failed") as PlanTask["status"] }
+          : task,
+      );
+      return {
+        ...state,
+        plan: { ...state.plan, tasks },
+        timeline: withTimeline(
+          state,
+          entry(
+            success ? "provider" : "error",
+            `${str(event, "taskTitle") || "Subtask"} ${success ? "complete" : "failed"}`,
+            str(event, "provider"),
+          ),
+        ),
+      };
+    }
+
+    case "EvidenceExtracted":
+      return {
+        ...state,
+        evidenceCount: num(event, "itemCount", state.evidenceCount),
+        timeline: withTimeline(
+          state,
+          entry(
+            "research",
+            `${num(event, "itemCount")} evidence items extracted`,
+            ((event.providers ?? []) as string[]).join(", "),
+          ),
+        ),
       };
 
     case "ProviderStarted":
@@ -253,6 +350,8 @@ function reduce(state: EngineState, action: Action): EngineState {
         {
           phase: "Thinking",
           startedAt: Date.now(),
+          stage: str(event, "stage") || "Opening conversation…",
+          stageAt: Date.now(),
           elapsedSeconds: 0,
           promptChars: num(event, "promptChars"),
           turn: num(event, "turn"),
@@ -263,12 +362,23 @@ function reduce(state: EngineState, action: Action): EngineState {
 
     case "ProviderTyping":
       return updateWorker(state, provider ?? "unknown", {
-        phase: "Generating",
+        phase: "Thinking",
+        stage: str(event, "stage") || "Typing prompt…",
+        stageAt: Date.now(),
       });
 
     case "ProviderWaiting":
       return updateWorker(state, provider ?? "unknown", {
         phase: "Waiting",
+        stage: str(event, "stage") || "Waiting for response…",
+        stageAt: Date.now(),
+      });
+
+    case "ProviderStreaming":
+      return updateWorker(state, provider ?? "unknown", {
+        phase: "Generating",
+        stage: str(event, "stage") || "Streaming answer…",
+        stageAt: Date.now(),
       });
 
     case "ProviderFinished": {
@@ -277,6 +387,8 @@ function reduce(state: EngineState, action: Action): EngineState {
         provider ?? "unknown",
         {
           phase: "Finished",
+          stage: "Finished",
+          stageAt: Date.now(),
           answerChars: num(event, "answerChars"),
           elapsedSeconds: num(event, "elapsedSeconds"),
         },
@@ -374,6 +486,8 @@ function reduce(state: EngineState, action: Action): EngineState {
         ...state,
         researching: false,
         progress: 1,
+        stage: "Done",
+        stageDetail: str(event, "headline") || state.stageDetail,
         consensus: state.consensus
           ? {
               ...state.consensus,
@@ -397,6 +511,7 @@ function reduce(state: EngineState, action: Action): EngineState {
       return {
         ...state,
         researching: false,
+        stage: "Failed",
         error: str(event, "error", "Research failed"),
         timeline: withTimeline(
           state,
@@ -410,12 +525,51 @@ function reduce(state: EngineState, action: Action): EngineState {
         role: "assistant",
         content: str(event, "content"),
         at: Date.now(),
+        final: (event.final as FinalAnswer | undefined) ?? undefined,
+        research: (event.research as ResearchResultView | undefined) ?? undefined,
       };
       return {
         ...state,
         researching: false,
         progress: 1,
+        stage: "Done",
         messages: [...state.messages, message],
+      };
+    }
+
+    case "Metrics": {
+      const snapshot: MetricsSnapshot = {
+        at: Date.now(),
+        system: event.system as MetricsSnapshot["system"],
+        engine: event.engine as MetricsSnapshot["engine"],
+        research: event.research as MetricsSnapshot["research"],
+      };
+      return {
+        ...state,
+        metrics: snapshot,
+        browserHidden: snapshot.engine?.browserHidden ?? state.browserHidden,
+      };
+    }
+
+    case "BrowserVisibility":
+      return { ...state, browserHidden: Boolean(event.hidden) };
+
+    case "Diagnostics":
+      return {
+        ...state,
+        diagnostics: (event.providers ?? []) as ProviderDiagnostics[],
+        diagnosticsAt: Date.now(),
+      };
+
+    case "Screenshot": {
+      const name = str(event, "provider");
+      if (!name) return state;
+      return {
+        ...state,
+        screenshots: {
+          ...state.screenshots,
+          [name]: { image: str(event, "image"), at: Date.now() },
+        },
       };
     }
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Union
+from urllib.parse import urlparse
 
 from playwright.async_api import Page
 
@@ -106,6 +107,138 @@ class TabManager:
                 f"Failed to open browser tab: {exc}",
                 code="BROWSER_TAB_OPEN_FAILED",
             ) from exc
+
+    async def acquire_page(
+        self,
+        url: str,
+        wait_until: str = "domcontentloaded",
+        timeout_seconds: Optional[float] = None,
+    ) -> Page:
+        """
+        Obtain a usable page for ``url``, creating one only if required.
+
+        The acquisition order is deliberate and is what keeps the browser
+        free of stray tabs:
+
+        1. **Reuse** an open tab already on the same host. A provider that
+           already has its tab is never given a second one, and the page
+           is *not* re-navigated, so an in-progress conversation survives.
+        2. **Adopt** an unused blank page. ``launch_persistent_context``
+           always opens one ``about:blank`` page at startup; adopting it
+           is what stops that page lingering as an empty tab forever.
+        3. **Create** a new page only when neither exists.
+
+        Args:
+            url: URL identifying the wanted host, navigated to only when a
+                page has to be adopted or created.
+            wait_until: Playwright navigation load state.
+            timeout_seconds: Optional navigation timeout in seconds.
+
+        Returns:
+            Page ready for use.
+
+        Raises:
+            BrowserError: If no page can be obtained or navigated.
+        """
+        existing = self.find_tab_by_host(url)
+        if existing is not None:
+            self._logger.debug("Reusing existing tab for %s", url)
+            self._session.add_page(existing)
+            return existing
+
+        goto_kwargs: dict[str, object] = {"wait_until": wait_until}
+        if timeout_seconds is not None:
+            goto_kwargs["timeout"] = timeout_seconds * 1000
+
+        blank = self.find_blank_page()
+        if blank is not None:
+            self._logger.debug("Adopting blank page for %s", url)
+            try:
+                await blank.goto(url, **goto_kwargs)
+                self._session.add_page(blank)
+                return blank
+            except Exception as exc:
+                raise BrowserError(
+                    f"Failed to navigate the blank tab to {url}: {exc}",
+                    code="BROWSER_TAB_NAVIGATION_FAILED",
+                ) from exc
+
+        return await self.open_tab(
+            url=url,
+            reuse_existing=False,
+            wait_until=wait_until,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def find_tab_by_host(self, url: str) -> Optional[Page]:
+        """
+        Find an open tab on the same host as ``url``.
+
+        Host matching, rather than exact-URL matching, is what allows a
+        provider's tab to be recognized after it has navigated into a
+        conversation-specific URL.
+
+        Args:
+            url: URL whose host identifies the wanted tab.
+
+        Returns:
+            Matching page, or None.
+        """
+        wanted = _host_of(url)
+        if not wanted:
+            return None
+        for page in self._session.sync_pages():
+            if _host_of(page.url) == wanted:
+                return page
+        return None
+
+    def find_blank_page(self) -> Optional[Page]:
+        """
+        Find an open page that carries no content.
+
+        Returns:
+            A blank page, or None when every page is in use.
+        """
+        for page in self._session.sync_pages():
+            if _is_blank(page.url):
+                return page
+        return None
+
+    async def close_blank_pages(self, keep_last: bool = True) -> int:
+        """
+        Close leftover blank tabs.
+
+        Called after providers have their tabs so the window never shows
+        an empty ``about:blank`` the user did not ask for. Chrome closes
+        the whole window when its last tab closes, so by default one page
+        is always kept when nothing else is open.
+
+        Args:
+            keep_last: Never close the final remaining page.
+
+        Returns:
+            Number of tabs closed.
+        """
+        pages = self._session.sync_pages()
+        blanks = [page for page in pages if _is_blank(page.url)]
+        if not blanks:
+            return 0
+
+        if keep_last and len(blanks) == len(pages):
+            blanks = blanks[1:]
+
+        closed = 0
+        for page in blanks:
+            try:
+                await page.close()
+                closed += 1
+            except Exception as exc:
+                self._logger.debug("Could not close blank tab: %s", exc)
+
+        if closed:
+            self._session.sync_pages()
+            self._logger.info("Closed %d unused blank tab(s)", closed)
+        return closed
 
     async def close_tab(
         self,
@@ -275,6 +408,41 @@ class TabManager:
                 code="BROWSER_TAB_NOT_FOUND",
             )
         return page
+
+
+_BLANK_URLS: frozenset[str] = frozenset(
+    {"", "about:blank", "chrome://newtab/", "chrome://new-tab-page/"}
+)
+
+
+def _host_of(url: str) -> str:
+    """
+    Extract a comparable host from a URL.
+
+    Args:
+        url: URL to inspect.
+
+    Returns:
+        Lower-cased host without a leading ``www.``, or an empty string.
+    """
+    try:
+        host = (urlparse(url).netloc or "").lower()
+    except ValueError:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def _is_blank(url: str) -> bool:
+    """
+    Report whether a URL identifies an empty tab.
+
+    Args:
+        url: Page URL.
+
+    Returns:
+        True when the page holds no site content.
+    """
+    return (url or "").strip().lower() in _BLANK_URLS
 
 
 __all__ = [

@@ -6,7 +6,14 @@
  * anywhere in the app.
  */
 
-export type PageId = "chat" | "workers" | "sessions" | "consensus" | "settings";
+export type PageId =
+  | "chat"
+  | "dashboard"
+  | "workers"
+  | "browser"
+  | "sessions"
+  | "consensus"
+  | "settings";
 
 interface Props {
   page: PageId;
@@ -15,11 +22,16 @@ interface Props {
   workerCount: number;
   activeCount: number;
   researching: boolean;
+  browserHidden: boolean;
+  onNewChat: () => void;
+  onToggleBrowser: () => void;
 }
 
 const ITEMS: Array<{ id: PageId; label: string; icon: string }> = [
   { id: "chat", label: "Architect Chat", icon: "◆" },
+  { id: "dashboard", label: "Mission Control", icon: "▤" },
   { id: "workers", label: "Live Workers", icon: "▦" },
+  { id: "browser", label: "Browser Manager", icon: "⬒" },
   { id: "sessions", label: "Research Timeline", icon: "◇" },
   { id: "consensus", label: "Consensus", icon: "◈" },
   { id: "settings", label: "Settings", icon: "⚙" },
@@ -32,6 +44,9 @@ export default function Sidebar({
   workerCount,
   activeCount,
   researching,
+  browserHidden,
+  onNewChat,
+  onToggleBrowser,
 }: Props) {
   return (
     <aside className="w-[248px] shrink-0 h-full flex flex-col border-r border-white/[.06] bg-ink-900/60 backdrop-blur-xl">
@@ -50,10 +65,11 @@ export default function Sidebar({
       </div>
 
       <button
-        onClick={() => onNavigate("chat")}
+        onClick={onNewChat}
         className="mx-3 mb-4 px-3 py-2.5 rounded-xl text-sm font-medium text-slate-100
                    bg-white/[.06] hover:bg-white/[.10] border border-white/[.07]
                    transition-all duration-200 flex items-center gap-2"
+        title="Start fresh conversations on every provider"
       >
         <span className="text-accent">+</span> New Chat
       </button>
@@ -83,6 +99,18 @@ export default function Sidebar({
       </nav>
 
       <div className="p-3 mt-2 border-t border-white/[.06]">
+        <button
+          onClick={onToggleBrowser}
+          disabled={!connected}
+          className="w-full mb-2 px-3 py-2 rounded-xl text-[12px] font-medium
+                     text-slate-300 bg-white/[.04] hover:bg-white/[.08]
+                     border border-white/[.06] transition-all duration-200
+                     flex items-center gap-2 disabled:opacity-40"
+          title="Chrome keeps running either way — automation is unaffected"
+        >
+          <span className="opacity-70">{browserHidden ? "◱" : "◰"}</span>
+          {browserHidden ? "Show Browser" : "Hide Browser"}
+        </button>
         <div className="flex items-center gap-2 px-2 py-1.5">
           <span
             className={`w-1.5 h-1.5 rounded-full ${

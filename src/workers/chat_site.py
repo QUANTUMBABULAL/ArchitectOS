@@ -151,6 +151,15 @@ class ChatSiteConfig(BaseModel):
     stability_checks: int = Field(default=3, ge=1)
     paste_threshold_chars: int = Field(default=400, ge=1)
     submit_delay_seconds: float = Field(default=0.3, ge=0)
+    submit_via_enter: bool = Field(
+        default=False,
+        description=(
+            "Submit by pressing Enter in the composer instead of clicking "
+            "the send button. Required for sites whose generic send-button "
+            "selector can match OTHER buttons (e.g. a sidebar 'New chat'), "
+            "which silently discards the conversation on every prompt"
+        ),
+    )
     verified: bool = Field(default=False)
     requires_auth: bool = Field(default=True)
     enabled_by_default: bool = Field(default=True)
